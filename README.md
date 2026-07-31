@@ -1,62 +1,145 @@
-# Herdr Scratch
+<div align="center">
 
-Configurable persistent scratch popups for each Herdr pane. Herdr draws the native popup while a private tmux server preserves the program when it is hidden.
+# 🪟 Herdr Scratch
+
+**Persistent per-pane scratch popups for Herdr.**
+
+*Native Herdr popups outside; private tmux sessions preserving state inside.*
+
+[![Herdr 0.7.5+](https://img.shields.io/badge/Herdr-0.7.5%2B-6c71c4)](https://herdr.dev)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-b7410e)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+</div>
+
+Herdr Scratch gives every Herdr pane its own persistent Neovim, shell, and tmux-session popup. Hide a popup and open it again later: the process, working state, and terminal contents are still there.
+
+- **Native popups** — Herdr owns placement, focus, dimensions, and backdrop rendering.
+- **Stateful toggles** — a private tmux server keeps each scratch alive while hidden.
+- **Per-pane identities** — Neovim, shell, and tmux scratches never collide across source panes.
+- **Responsive profiles** — popup dimensions can follow the active Herdr client width.
+- **Project-aware cwd** — moving the source pane to another directory recreates its scratches there.
+- **Familiar controls** — the current Herdr prefix is mirrored inside the scratch session.
+
+## Install
+
+Requires macOS, [Herdr](https://herdr.dev) 0.7.5 or newer, tmux, and a Rust toolchain. Neovim is required only for the default `nvim` scratch.
+
+```sh
+herdr plugin install shadowfax92/herdr-scratch
+```
+
+Add the three actions to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "alt+i"
+type = "plugin_action"
+command = "shadowfax.scratch.toggle-nvim"
+description = "Toggle pane scratch nvim"
+
+[[keys.command]]
+key = "alt+o"
+type = "plugin_action"
+command = "shadowfax.scratch.toggle-shell"
+description = "Toggle pane scratch shell"
+
+[[keys.command]]
+key = "alt+t"
+type = "plugin_action"
+command = "shadowfax.scratch.toggle-tmux"
+description = "Toggle pane tmux sessions"
+```
+
+Reload the running server:
+
+```sh
+herdr server reload-config
+```
 
 ## Keys
 
-- `Alt-i` toggles nvim.
-- `Alt-o` toggles a shell.
-- `Alt-t` toggles a shell prepared for attaching existing tmux sessions.
-- Any configured scratch key hides the open popup.
-- `Ctrl-a x` terminates the current scratch session after confirmation.
+| Key | Result |
+| --- | --- |
+| `Alt-i` | Toggle this pane's persistent Neovim |
+| `Alt-o` | Toggle this pane's persistent login shell |
+| `Alt-t` | Toggle a shell prepared for your normal tmux server |
+| any configured scratch key | Hide the currently open scratch popup |
+| `prefix x` | Confirm and terminate the current scratch session |
+| `prefix prefix` | Send the prefix through to the program inside |
 
-The nvim, shell, and tmux scratches have separate identities for every Herdr pane. Changing the source pane's cwd recreates that pane's scratch in the new path. `TMX_SCRATCH=1` remains available inside every scratch.
+For example, with Herdr's prefix set to `Ctrl-a`, use `Ctrl-a x` to terminate a scratch. Hiding and terminating are different: hiding preserves state; terminating starts a fresh session the next time you toggle it.
 
 ## Configuration
 
-Edit:
+The first toggle creates `config.yaml` from [config.default.yaml](config.default.yaml). Find its directory with:
 
-```text
-~/.config/herdr/plugins/config/shadowfax.scratch/config.yaml
+```sh
+herdr plugin config-dir shadowfax.scratch
 ```
 
-The file is created from [config.default.yaml](config.default.yaml) on first use. Profiles use the active Herdr client width and the first matching profile wins:
+Each scratch selects a command, a key used for hiding, and optional dimensions:
 
 ```yaml
 default_popup: { width: "90%", height: "99%" }
 
+scratches:
+  nvim:
+    command: ["nvim"]
+    tmx_type: vim
+    key: alt+i
+
+  shell:
+    shell: true
+    tmx_type: sh
+    key: alt+o
+
+  tmux:
+    shell: true
+    clear_tmux_env: true
+    tmx_type: tmux
+    key: alt+t
+```
+
+Popup sizes accept either positive cell counts or percentages from `1%` through `100%`.
+
+### Responsive profiles
+
+Profiles are checked in order against the active Herdr client width. The first match wins; unspecified scratches fall back to their scratch-level or default dimensions.
+
+```yaml
 profiles:
   - name: laptop
     match: { max_client_width: 310 }
     popups:
       nvim: { width: "95%", height: "99%" }
+      shell: { width: "95%", height: "99%" }
 
   - name: full-ultrawide
     match: { min_client_width: 400 }
     popups:
       nvim: { width: "70%", height: "99%" }
+      shell: { width: "80%", height: "99%" }
 ```
 
-Inspect the active profile and resolved sizes:
-
-```sh
-/Users/shadowfax/code/side-projects/herdr-custom-plugins/my/herdr-scratch/target/release/herdr-scratch config
-```
+The configuration is loaded on every toggle, so size and command changes do not require a Herdr reload. If a command changes while its scratch session is alive, terminate that session once with `prefix x` before reopening it.
 
 ## Existing tmux sessions
 
-Open the `tmux` scratch with `Alt-t`, then attach normally:
+The `tmux` scratch deliberately removes `TMUX`, `TMUX_PANE`, and `TMUX_TMPDIR` before starting its shell. Commands inside it therefore target your normal tmux server instead of Herdr Scratch's private server:
 
 ```sh
 tmux list-sessions
 tmux attach -t <session>
 ```
 
-That scratch removes the outer private tmux variables before starting its shell, so these commands target your normal tmux server. Hiding the Herdr popup leaves the attached client and tmux session running.
+Hiding the popup leaves both the attached client and the target tmux session running.
 
-## Adding a scratch
+## Add another scratch
 
-Add a definition to `config.yaml`:
+Scratch definitions are data-driven, but Herdr actions are declared in the plugin manifest. For a custom scratch, use a local clone or fork and add both pieces.
+
+Add the scratch to `config.yaml`:
 
 ```yaml
 scratches:
@@ -66,22 +149,47 @@ scratches:
     key: alt+g
 ```
 
-Then add a Herdr binding:
+Add a matching action to `herdr-plugin.toml`:
 
 ```toml
-[[keys.command]]
-key = "alt+g"
-type = "shell"
-command = "/Users/shadowfax/code/side-projects/herdr-custom-plugins/my/herdr-scratch/target/release/herdr-scratch toggle --scratch lazygit"
-description = "Toggle pane scratch lazygit"
+[[actions]]
+id = "toggle-lazygit"
+title = "Toggle scratch lazygit"
+contexts = ["pane"]
+command = ["./target/release/herdr-scratch", "toggle", "--scratch", "lazygit"]
 ```
 
-Reload Herdr with `herdr server reload-config`. If a scratch command changes while its tmux session exists, terminate that session once with `Ctrl-a x` before reopening it.
+Then bind `shadowfax.scratch.toggle-lazygit` in Herdr and re-link the local checkout.
 
-## Install
+## How persistence works
+
+Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server under the plugin state directory owns the long-running process. The popup client detaches when hidden and reattaches on the next toggle.
+
+Scratch sessions expose these compatibility variables:
+
+- `TMX_SCRATCH=1`
+- `TMX_SCRATCH_TYPE=<tmx_type>`
+- `TMX_PARENT_PANE=<source pane>`
+- `HERDR_SCRATCH_KIND=<scratch name>`
+- `HERDR_SCRATCH_SOURCE_PANE=<source pane>`
+
+## Local development
 
 ```sh
-cargo build --release
-herdr plugin link /Users/shadowfax/code/side-projects/herdr-custom-plugins/my/herdr-scratch --enabled
-herdr server reload-config
+git clone https://github.com/shadowfax92/herdr-scratch.git
+cd herdr-scratch
+herdr plugin link .
 ```
+
+Run the local gate:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
+```
+
+## License
+
+[MIT](LICENSE)
