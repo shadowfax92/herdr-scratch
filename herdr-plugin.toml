@@ -1,0 +1,39 @@
+id = "shadowfax.scratch"
+name = "Herdr Scratch"
+version = "0.1.0"
+description = "Per-pane persistent nvim and shell popups backed by tmux."
+min_herdr_version = "0.7.5"
+platforms = ["macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[actions]]
+id = "toggle-nvim"
+title = "Toggle scratch nvim"
+description = "Open or hide the persistent nvim popup for the focused pane."
+contexts = ["pane"]
+command = ["./target/release/herdr-scratch", "toggle", "--kind", "nvim"]
+
+[[actions]]
+id = "toggle-shell"
+title = "Toggle scratch shell"
+description = "Open or hide the persistent shell popup for the focused pane."
+contexts = ["pane"]
+command = ["./target/release/herdr-scratch", "toggle", "--kind", "shell"]
+
+[[panes]]
+id = "nvim"
+title = "scratch nvim"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["./target/release/herdr-scratch", "run-popup", "--kind", "nvim"]
+
+[[panes]]
+id = "shell"
+title = "scratch shell"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["./target/release/herdr-scratch", "run-popup", "--kind", "shell"]
