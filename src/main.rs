@@ -1,6 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
-use herdr_scratch::ScratchKind;
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -12,28 +11,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Toggle {
-        #[arg(long, value_enum)]
-        kind: Kind,
+        #[arg(long, visible_alias = "kind")]
+        scratch: String,
     },
-    RunPopup {
-        #[arg(long, value_enum)]
-        kind: Kind,
-    },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Kind {
-    Nvim,
-    Shell,
-}
-
-impl From<Kind> for ScratchKind {
-    fn from(kind: Kind) -> Self {
-        match kind {
-            Kind::Nvim => Self::Nvim,
-            Kind::Shell => Self::Shell,
-        }
-    }
+    RunPopup,
+    Config,
 }
 
 fn main() {
@@ -45,7 +27,8 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Toggle { kind } => herdr_scratch::toggle(kind.into()),
-        Command::RunPopup { kind } => herdr_scratch::run_popup(kind.into()),
+        Command::Toggle { scratch } => herdr_scratch::toggle(&scratch),
+        Command::RunPopup => herdr_scratch::run_popup(),
+        Command::Config => herdr_scratch::show_config(),
     }
 }

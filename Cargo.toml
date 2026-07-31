@@ -1,8 +1,8 @@
 [package]
 name = "herdr-scratch"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Per-pane persistent nvim and shell popups for Herdr"
+description = "Configurable per-pane persistent scratch popups for Herdr"
 license = "MIT"
 
 [dependencies]
@@ -12,6 +12,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 toml_edit = "0.22"
+noyalib = "0.0.18"
 
 [lib]
 name = "herdr_scratch"

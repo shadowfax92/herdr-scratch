@@ -16,10 +16,12 @@ pub struct SourcePane {
 }
 
 impl SourcePane {
-    pub fn from_env() -> Result<Self> {
-        let raw = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
-            .context("HERDR_PLUGIN_CONTEXT_JSON is missing")?;
-        Self::from_json(&raw)
+    pub fn from_env() -> Result<Option<Self>> {
+        match std::env::var("HERDR_PLUGIN_CONTEXT_JSON") {
+            Ok(raw) => Self::from_json(&raw).map(Some),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(error) => Err(error).context("failed to read HERDR_PLUGIN_CONTEXT_JSON"),
+        }
     }
 
     fn from_json(raw: &str) -> Result<Self> {

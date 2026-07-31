@@ -38,10 +38,10 @@ fn tmux_prefix_from_config(config: &str) -> Result<String> {
         .and_then(|keys| keys.get("prefix"))
         .and_then(Item::as_str)
         .unwrap_or("ctrl+b");
-    normalize_tmux_prefix(prefix)
+    normalize_tmux_key(prefix)
 }
 
-fn normalize_tmux_prefix(prefix: &str) -> Result<String> {
+pub fn normalize_tmux_key(prefix: &str) -> Result<String> {
     let value = prefix.trim().to_ascii_lowercase();
     if value.is_empty() {
         bail!("Herdr prefix cannot be empty");
@@ -137,13 +137,13 @@ mod tests {
 
     #[test]
     fn maps_shifted_and_named_keys() {
-        assert_eq!(normalize_tmux_prefix("alt+shift+x").unwrap(), "M-X");
-        assert_eq!(normalize_tmux_prefix("ctrl+space").unwrap(), "C-Space");
-        assert_eq!(normalize_tmux_prefix("escape").unwrap(), "Escape");
+        assert_eq!(normalize_tmux_key("alt+shift+x").unwrap(), "M-X");
+        assert_eq!(normalize_tmux_key("ctrl+space").unwrap(), "C-Space");
+        assert_eq!(normalize_tmux_key("escape").unwrap(), "Escape");
     }
 
     #[test]
     fn rejects_command_prefixes() {
-        assert!(normalize_tmux_prefix("cmd+a").is_err());
+        assert!(normalize_tmux_key("cmd+a").is_err());
     }
 }

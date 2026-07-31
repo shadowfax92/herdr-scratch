@@ -7,26 +7,27 @@ use std::process::{Command, Output};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::ScratchKind;
+use crate::config::ResolvedScratch;
 
 const SERVER_NAME: &str = "shadowfax-herdr-scratch";
 const ENV_VERSION: &str = "1";
 
 pub fn run(
-    kind: ScratchKind,
+    scratch: &ResolvedScratch,
     pane_id: &str,
     cwd: &Path,
     server_identity: &str,
     state_dir: &Path,
     prefix: &str,
+    hide_keys: &[String],
 ) -> Result<()> {
     ensure_state_dir(state_dir)?;
-    configure_server(state_dir, prefix)?;
+    configure_server(state_dir, prefix, hide_keys)?;
 
-    let name = session_name(kind, pane_id, server_identity);
+    let name = session_name(&scratch.name, pane_id, server_identity);
     if session_needs_recreation(state_dir, &name, cwd)? {
         kill_session(state_dir, &name)?;
-        create_session(state_dir, &name, kind, pane_id, cwd)?;
+        create_session(state_dir, &name, scratch, pane_id, cwd)?;
     }
 
     let mut command = tmux_command(state_dir);
@@ -44,8 +45,8 @@ fn ensure_state_dir(state_dir: &Path) -> Result<()> {
         .with_context(|| format!("failed to secure {}", state_dir.display()))
 }
 
-fn configure_server(state_dir: &Path, prefix: &str) -> Result<()> {
-    let args = server_configuration_args(prefix);
+fn configure_server(state_dir: &Path, prefix: &str, hide_keys: &[String]) -> Result<()> {
+    let args = server_configuration_args(prefix, hide_keys);
     checked_output(
         tmux_command(state_dir).args(args),
         "configure tmux scratch server",
@@ -65,7 +66,7 @@ fn session_needs_recreation(state_dir: &Path, name: &str, cwd: &Path) -> Result<
 fn create_session(
     state_dir: &Path,
     name: &str,
-    kind: ScratchKind,
+    scratch: &ResolvedScratch,
     pane_id: &str,
     cwd: &Path,
 ) -> Result<()> {
@@ -80,24 +81,15 @@ fn create_session(
         "-e",
         "TMX_SCRATCH=1",
         "-e",
-        &format!("TMX_SCRATCH_TYPE={}", kind.tmx_type()),
+        &format!("TMX_SCRATCH_TYPE={}", scratch.tmx_type),
         "-e",
         &format!("TMX_PARENT_PANE={pane_id}"),
         "-e",
-        &format!("HERDR_SCRATCH_KIND={}", kind.as_str()),
+        &format!("HERDR_SCRATCH_KIND={}", scratch.name),
         "-e",
         &format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
     ]);
-    match kind {
-        ScratchKind::Nvim => {
-            command.arg("nvim");
-        }
-        ScratchKind::Shell => {
-            command
-                .arg(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()))
-                .arg("-l");
-        }
-    }
+    command.args(&scratch.command);
     checked_output(&mut command, "create tmux scratch session")?;
     set_session_option(state_dir, name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
     set_session_option(state_dir, name, "@herdr_source_pane", pane_id)?;
@@ -165,7 +157,7 @@ fn tmux_command(state_dir: &Path) -> Command {
     command
 }
 
-fn server_configuration_args(prefix: &str) -> Vec<String> {
+fn server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     for command in [
         vec!["start-server"],
@@ -188,21 +180,28 @@ fn server_configuration_args(prefix: &str) -> Vec<String> {
             "kill-session",
         ],
         vec!["bind-key", "-T", "prefix", prefix, "send-prefix"],
-        vec!["bind-key", "-n", "M-i", "detach-client"],
-        vec!["bind-key", "-n", "M-o", "detach-client"],
     ] {
         if !args.is_empty() {
             args.push(";".into());
         }
         args.extend(command.into_iter().map(str::to_owned));
     }
+    for key in hide_keys {
+        args.push(";".into());
+        args.extend([
+            "bind-key".into(),
+            "-n".into(),
+            key.clone(),
+            "detach-client".into(),
+        ]);
+    }
     args
 }
 
-fn session_name(kind: ScratchKind, pane_id: &str, server_identity: &str) -> String {
+fn session_name(scratch_name: &str, pane_id: &str, server_identity: &str) -> String {
     format!(
         "hs/{}/{}/{}",
-        kind.as_str(),
+        scratch_name,
         short_hash(server_identity),
         sanitize(pane_id)
     )
@@ -246,10 +245,10 @@ mod tests {
 
     #[test]
     fn session_identity_is_per_kind_pane_and_server() {
-        let nvim = session_name(ScratchKind::Nvim, "w2:p1", "/tmp/herdr.sock");
-        let shell = session_name(ScratchKind::Shell, "w2:p1", "/tmp/herdr.sock");
-        let other_pane = session_name(ScratchKind::Nvim, "w2:p2", "/tmp/herdr.sock");
-        let other_server = session_name(ScratchKind::Nvim, "w2:p1", "/tmp/other.sock");
+        let nvim = session_name("nvim", "w2:p1", "/tmp/herdr.sock");
+        let shell = session_name("shell", "w2:p1", "/tmp/herdr.sock");
+        let other_pane = session_name("nvim", "w2:p2", "/tmp/herdr.sock");
+        let other_server = session_name("nvim", "w2:p1", "/tmp/other.sock");
 
         assert_eq!(nvim, "hs/nvim/0cb0c5e4a746/w2-p1");
         assert_ne!(nvim, shell);
@@ -259,7 +258,7 @@ mod tests {
 
     #[test]
     fn nested_tmux_uses_the_same_toggle_keys() {
-        let args = server_configuration_args("C-a");
+        let args = server_configuration_args("C-a", &["M-i".into(), "M-o".into(), "M-t".into()]);
 
         assert!(args
             .windows(4)
@@ -267,6 +266,9 @@ mod tests {
         assert!(args
             .windows(4)
             .any(|part| part == ["bind-key", "-n", "M-o", "detach-client"]));
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["bind-key", "-n", "M-t", "detach-client"]));
         assert!(args
             .windows(5)
             .any(|part| part == ["bind-key", "-T", "prefix", "C-a", "send-prefix"]));
