@@ -161,6 +161,7 @@ fn server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> 
     let mut args = Vec::new();
     for command in [
         vec!["start-server"],
+        vec!["set-option", "-s", "exit-empty", "off"],
         vec!["set-option", "-g", "status", "off"],
         vec!["set-option", "-g", "prefix", prefix],
         vec!["set-option", "-g", "prefix2", "None"],
@@ -260,6 +261,10 @@ mod tests {
     fn nested_tmux_uses_the_same_toggle_keys() {
         let args = server_configuration_args("C-a", &["M-i".into(), "M-o".into(), "M-t".into()]);
 
+        assert_eq!(
+            &args[..6],
+            ["start-server", ";", "set-option", "-s", "exit-empty", "off"]
+        );
         assert!(args
             .windows(4)
             .any(|part| part == ["bind-key", "-n", "M-i", "detach-client"]));
