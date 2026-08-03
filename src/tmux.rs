@@ -10,13 +10,13 @@ use sha2::{Digest, Sha256};
 use crate::config::ResolvedScratch;
 
 const SERVER_NAME: &str = "shadowfax-herdr-scratch";
-const ENV_VERSION: &str = "1";
+const ENV_VERSION: &str = "2";
 
 pub fn run(
     scratch: &ResolvedScratch,
     pane_id: &str,
     cwd: &Path,
-    server_identity: &str,
+    herdr_socket_path: Option<&str>,
     state_dir: &Path,
     prefix: &str,
     hide_keys: &[String],
@@ -24,10 +24,14 @@ pub fn run(
     ensure_state_dir(state_dir)?;
     configure_server(state_dir, prefix, hide_keys)?;
 
-    let name = session_name(&scratch.name, pane_id, server_identity);
+    let name = session_name(
+        &scratch.name,
+        pane_id,
+        herdr_socket_path.unwrap_or("default"),
+    );
     if session_needs_recreation(state_dir, &name, cwd)? {
         kill_session(state_dir, &name)?;
-        create_session(state_dir, &name, scratch, pane_id, cwd)?;
+        create_session(state_dir, &name, scratch, pane_id, cwd, herdr_socket_path)?;
     }
 
     let mut command = tmux_command(state_dir);
@@ -69,9 +73,30 @@ fn create_session(
     scratch: &ResolvedScratch,
     pane_id: &str,
     cwd: &Path,
+    herdr_socket_path: Option<&str>,
 ) -> Result<()> {
     let mut command = tmux_command(state_dir);
-    command.args([
+    command.args(new_session_args(
+        name,
+        scratch,
+        pane_id,
+        cwd,
+        herdr_socket_path,
+    ));
+    checked_output(&mut command, "create tmux scratch session")?;
+    set_session_option(state_dir, name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
+    set_session_option(state_dir, name, "@herdr_source_pane", pane_id)?;
+    set_session_option(state_dir, name, "@herdr_env_version", ENV_VERSION)
+}
+
+fn new_session_args(
+    name: &str,
+    scratch: &ResolvedScratch,
+    pane_id: &str,
+    cwd: &Path,
+    herdr_socket_path: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
         "new-session",
         "-d",
         "-s",
@@ -88,12 +113,15 @@ fn create_session(
         &format!("HERDR_SCRATCH_KIND={}", scratch.name),
         "-e",
         &format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
-    ]);
-    command.args(&scratch.command);
-    checked_output(&mut command, "create tmux scratch session")?;
-    set_session_option(state_dir, name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
-    set_session_option(state_dir, name, "@herdr_source_pane", pane_id)?;
-    set_session_option(state_dir, name, "@herdr_env_version", ENV_VERSION)
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    if let Some(socket_path) = herdr_socket_path.filter(|path| !path.is_empty()) {
+        args.extend(["-e".into(), format!("HERDR_SOCKET_PATH={socket_path}")]);
+    }
+    args.extend(scratch.command.iter().cloned());
+    args
 }
 
 fn kill_session(state_dir: &Path, name: &str) -> Result<()> {
@@ -244,6 +272,16 @@ fn exact_target(name: &str) -> String {
 mod tests {
     use super::*;
 
+    fn scratch_command() -> ResolvedScratch {
+        ResolvedScratch {
+            name: "nvim".into(),
+            command: vec!["nvim".into(), "--clean".into()],
+            tmx_type: "vim".into(),
+            clear_tmux_env: false,
+            key: Some("alt+i".into()),
+        }
+    }
+
     #[test]
     fn session_identity_is_per_kind_pane_and_server() {
         let nvim = session_name("nvim", "w2:p1", "/tmp/herdr.sock");
@@ -255,6 +293,41 @@ mod tests {
         assert_ne!(nvim, shell);
         assert_ne!(nvim, other_pane);
         assert_ne!(nvim, other_server);
+    }
+
+    #[test]
+    fn new_session_pins_the_originating_herdr_socket() {
+        let args = new_session_args(
+            "hs/nvim/server/w2-p1",
+            &scratch_command(),
+            "w2:p1",
+            Path::new("/tmp/project"),
+            Some("/tmp/herdr sessions/main.sock"),
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-e", "HERDR_SOCKET_PATH=/tmp/herdr sessions/main.sock"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-e", "HERDR_SCRATCH_SOURCE_PANE=w2:p1"]));
+        assert_eq!(&args[args.len() - 2..], ["nvim", "--clean"]);
+    }
+
+    #[test]
+    fn new_session_omits_the_socket_without_an_originating_herdr() {
+        for socket_path in [None, Some("")] {
+            let args = new_session_args(
+                "hs/nvim/default/w2-p1",
+                &scratch_command(),
+                "w2:p1",
+                Path::new("/tmp/project"),
+                socket_path,
+            );
+
+            assert!(!args.iter().any(|arg| arg.starts_with("HERDR_SOCKET_PATH=")));
+            assert_eq!(&args[args.len() - 2..], ["nvim", "--clean"]);
+        }
     }
 
     #[test]
