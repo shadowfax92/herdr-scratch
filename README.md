@@ -172,6 +172,7 @@ Scratch sessions expose these compatibility variables:
 - `TMX_PARENT_PANE=<source pane>`
 - `HERDR_SCRATCH_KIND=<scratch name>`
 - `HERDR_SCRATCH_SOURCE_PANE=<source pane>`
+- `HERDR_SOCKET_PATH=<originating Herdr API socket>` when Herdr provides one
 
 ## Local development
 

@@ -43,7 +43,9 @@ pub fn run_popup() -> Result<()> {
     let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
         .map(PathBuf::from)
         .context("HERDR_PLUGIN_STATE_DIR is missing")?;
-    let server_identity = std::env::var("HERDR_SOCKET_PATH").unwrap_or_else(|_| "default".into());
+    let herdr_socket_path = std::env::var("HERDR_SOCKET_PATH")
+        .ok()
+        .filter(|path| !path.is_empty());
     let tmux_prefix = std::env::var("HERDR_SCRATCH_PREFIX").unwrap_or_else(|_| "C-b".into());
     let config = LoadedConfig::load()?;
     let scratch = config.scratch(&scratch_name)?;
@@ -56,7 +58,7 @@ pub fn run_popup() -> Result<()> {
         &scratch,
         &source_pane_id,
         &source_cwd,
-        &server_identity,
+        herdr_socket_path.as_deref(),
         &state_dir,
         &tmux_prefix,
         &hide_keys,
