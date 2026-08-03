@@ -70,7 +70,12 @@ impl TmuxServer<'_> {
         }
         let stored_cwd = self.session_option(name, "@herdr_source_cwd")?;
         let version = self.session_option(name, "@herdr_env_version")?;
-        Ok(stored_cwd != cwd.to_string_lossy() || version != ENV_VERSION)
+        Ok(session_metadata_needs_recreation(
+            self.mode,
+            &stored_cwd,
+            cwd,
+            &version,
+        ))
     }
 
     fn create_session(
@@ -139,6 +144,16 @@ impl TmuxServer<'_> {
             .env_remove("TMUX_PANE");
         command
     }
+}
+
+fn session_metadata_needs_recreation(
+    mode: TmuxMode,
+    stored_cwd: &str,
+    current_cwd: &Path,
+    version: &str,
+) -> bool {
+    version != ENV_VERSION
+        || (mode == TmuxMode::Minimal && stored_cwd != current_cwd.to_string_lossy())
 }
 
 fn checked_output(command: &mut Command, operation: &str) -> Result<Output> {
@@ -463,5 +478,27 @@ mod tests {
         assert!(start < prefix);
         assert!(prefix < session);
         assert_eq!(&args[args.len() - 2..], ["fish", "-l"]);
+    }
+
+    #[test]
+    fn workspace_survives_source_cwd_changes() {
+        assert!(session_metadata_needs_recreation(
+            TmuxMode::Minimal,
+            "/old/project",
+            Path::new("/new/project"),
+            ENV_VERSION,
+        ));
+        assert!(!session_metadata_needs_recreation(
+            TmuxMode::Workspace,
+            "/old/project",
+            Path::new("/new/project"),
+            ENV_VERSION,
+        ));
+        assert!(session_metadata_needs_recreation(
+            TmuxMode::Workspace,
+            "/old/project",
+            Path::new("/old/project"),
+            "outdated",
+        ));
     }
 }
