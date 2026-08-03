@@ -60,7 +60,7 @@ herdr server reload-config
 | any configured scratch key | Hide the currently open scratch popup |
 | `prefix prefix` | Send the prefix through to the program inside |
 
-The minimal Neovim scratch inherits Herdr's prefix. The shell workspace uses its configured `tmux_prefix` and otherwise retains your normal tmux bindings. With the default configuration, `Ctrl-g` controls shell windows and panes while `Ctrl-a` remains available to Herdr and your normal tmux server.
+The minimal Neovim scratch inherits Herdr's prefix. The shell workspace uses its configured `tmux_prefix` and otherwise retains your normal tmux bindings. With the default configuration, `Ctrl-a` controls tmux while the popup is focused and returns to Herdr when the popup is hidden.
 
 ## Configuration
 
@@ -85,7 +85,7 @@ scratches:
     shell: true
     tmx_type: sh
     tmux_mode: workspace
-    tmux_prefix: ctrl+g
+    tmux_prefix: ctrl+a
     key: alt+o
 ```
 

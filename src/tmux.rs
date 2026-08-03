@@ -14,6 +14,36 @@ const WORKSPACE_SERVER_NAME: &str = "shadowfax-herdr-workspace";
 const WORKSPACE_HOOK_INDEX: u16 = 999;
 const ENV_VERSION: &str = "1";
 
+pub struct HerdrEnvironment {
+    socket_path: Option<String>,
+    workspace_id: Option<String>,
+    tab_id: Option<String>,
+}
+
+impl HerdrEnvironment {
+    pub fn from_process() -> Self {
+        Self {
+            socket_path: nonempty_process_environment("HERDR_SOCKET_PATH"),
+            workspace_id: nonempty_process_environment("HERDR_WORKSPACE_ID"),
+            tab_id: nonempty_process_environment("HERDR_TAB_ID"),
+        }
+    }
+
+    fn server_identity(&self) -> &str {
+        self.socket_path.as_deref().unwrap_or("default")
+    }
+}
+
+struct SessionSpec<'a> {
+    name: &'a str,
+    scratch: &'a ResolvedScratch,
+    pane_id: &'a str,
+    cwd: &'a Path,
+    prefix: &'a str,
+    hide_keys: &'a [String],
+    herdr_environment: &'a HerdrEnvironment,
+}
+
 struct TmuxServer<'a> {
     state_dir: &'a Path,
     mode: TmuxMode,
@@ -23,7 +53,7 @@ pub fn run(
     scratch: &ResolvedScratch,
     pane_id: &str,
     cwd: &Path,
-    server_identity: &str,
+    herdr_environment: &HerdrEnvironment,
     state_dir: &Path,
     prefix: &str,
     hide_keys: &[String],
@@ -34,13 +64,24 @@ pub fn run(
         mode: scratch.tmux_mode,
     };
 
-    let name = session_name(&scratch.name, pane_id, server_identity);
-    if server.session_needs_recreation(&name, cwd)? {
-        server.kill_session(&name)?;
-        server.create_session(&name, scratch, pane_id, cwd, prefix, hide_keys)?;
+    let name = session_name(&scratch.name, pane_id, herdr_environment.server_identity());
+    let session = SessionSpec {
+        name: &name,
+        scratch,
+        pane_id,
+        cwd,
+        prefix,
+        hide_keys,
+        herdr_environment,
+    };
+    if server.session_needs_recreation(session.name, session.cwd)? {
+        server.kill_session(session.name)?;
+        server.create_session(&session)?;
     } else {
         server.configure(prefix, hide_keys)?;
     }
+    server.update_session_metadata(&session)?;
+    server.update_session_environment(&session)?;
 
     let mut command = server.command();
     command.args(["attach-session", "-t", &exact_target(&name)]);
@@ -78,23 +119,37 @@ impl TmuxServer<'_> {
         ))
     }
 
-    fn create_session(
-        &self,
-        name: &str,
-        scratch: &ResolvedScratch,
-        pane_id: &str,
-        cwd: &Path,
-        prefix: &str,
-        hide_keys: &[String],
-    ) -> Result<()> {
+    fn create_session(&self, session: &SessionSpec<'_>) -> Result<()> {
         let mut command = self.command();
-        command.args(configured_session_args(
-            scratch, name, pane_id, cwd, prefix, hide_keys,
-        ));
+        command.args(configured_session_args(session));
         checked_output(&mut command, "create tmux scratch session")?;
-        self.set_session_option(name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
-        self.set_session_option(name, "@herdr_source_pane", pane_id)?;
-        self.set_session_option(name, "@herdr_env_version", ENV_VERSION)
+        Ok(())
+    }
+
+    fn update_session_metadata(&self, session: &SessionSpec<'_>) -> Result<()> {
+        self.set_session_option(
+            session.name,
+            "@herdr_source_cwd",
+            &session.cwd.to_string_lossy(),
+        )?;
+        self.set_session_option(session.name, "@herdr_source_pane", session.pane_id)?;
+        self.set_session_option(session.name, "@herdr_env_version", ENV_VERSION)
+    }
+
+    fn update_session_environment(&self, session: &SessionSpec<'_>) -> Result<()> {
+        for (key, value) in session_environment(session) {
+            checked_output(
+                self.command().args([
+                    "set-environment",
+                    "-t",
+                    &exact_target(session.name),
+                    &key,
+                    &value,
+                ]),
+                "update tmux scratch session environment",
+            )?;
+        }
+        Ok(())
     }
 
     fn kill_session(&self, name: &str) -> Result<()> {
@@ -152,8 +207,8 @@ fn session_metadata_needs_recreation(
     current_cwd: &Path,
     version: &str,
 ) -> bool {
-    version != ENV_VERSION
-        || (mode == TmuxMode::Minimal && stored_cwd != current_cwd.to_string_lossy())
+    mode == TmuxMode::Minimal
+        && (version != ENV_VERSION || stored_cwd != current_cwd.to_string_lossy())
 }
 
 fn checked_output(command: &mut Command, operation: &str) -> Result<Output> {
@@ -230,7 +285,6 @@ fn minimal_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<
 fn workspace_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> {
     let overlay = workspace_overlay_command(prefix, hide_keys);
     let mut commands = vec![vec!["start-server".into()]];
-    commands.extend(workspace_overlay_commands(prefix, hide_keys));
     for hook in ["after-set-option", "after-bind-key", "after-unbind-key"] {
         commands.push(vec![
             "set-hook".into(),
@@ -239,39 +293,62 @@ fn workspace_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Ve
             overlay.clone(),
         ]);
     }
+    commands.extend(workspace_overlay_commands(prefix, hide_keys));
     flatten_commands(commands)
 }
 
-fn configured_session_args(
-    scratch: &ResolvedScratch,
-    name: &str,
-    pane_id: &str,
-    cwd: &Path,
-    prefix: &str,
-    hide_keys: &[String],
-) -> Vec<String> {
-    let mut args = server_configuration_args(scratch.tmux_mode, prefix, hide_keys);
+fn configured_session_args(session: &SessionSpec<'_>) -> Vec<String> {
+    let mut args =
+        server_configuration_args(session.scratch.tmux_mode, session.prefix, session.hide_keys);
     args.push(";".into());
     args.extend([
         "new-session".into(),
         "-d".into(),
         "-s".into(),
-        name.into(),
+        session.name.into(),
         "-c".into(),
-        cwd.to_string_lossy().into_owned(),
-        "-e".into(),
-        "TMX_SCRATCH=1".into(),
-        "-e".into(),
-        format!("TMX_SCRATCH_TYPE={}", scratch.tmx_type),
-        "-e".into(),
-        format!("TMX_PARENT_PANE={pane_id}"),
-        "-e".into(),
-        format!("HERDR_SCRATCH_KIND={}", scratch.name),
-        "-e".into(),
-        format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
+        session.cwd.to_string_lossy().into_owned(),
     ]);
-    args.extend(scratch.command.iter().cloned());
+    for (key, value) in session_environment(session) {
+        args.extend(["-e".into(), format!("{key}={value}")]);
+    }
+    args.extend(session.scratch.command.iter().cloned());
     args
+}
+
+fn session_environment(session: &SessionSpec<'_>) -> Vec<(String, String)> {
+    let mut environment = vec![
+        ("HERDR_ENV".into(), "1".into()),
+        ("HERDR_PANE_ID".into(), session.pane_id.into()),
+        ("HERDR_SCRATCH_KIND".into(), session.scratch.name.clone()),
+        ("HERDR_SCRATCH_NAME".into(), session.scratch.name.clone()),
+        ("HERDR_SCRATCH_PREFIX".into(), session.prefix.into()),
+        (
+            "HERDR_SCRATCH_SOURCE_CWD".into(),
+            session.cwd.to_string_lossy().into_owned(),
+        ),
+        ("HERDR_SCRATCH_SOURCE_PANE".into(), session.pane_id.into()),
+        ("TMX_PARENT_PANE".into(), session.pane_id.into()),
+        ("TMX_SCRATCH".into(), "1".into()),
+        ("TMX_SCRATCH_TYPE".into(), session.scratch.tmx_type.clone()),
+    ];
+    for (key, value) in [
+        ("HERDR_SOCKET_PATH", &session.herdr_environment.socket_path),
+        (
+            "HERDR_WORKSPACE_ID",
+            &session.herdr_environment.workspace_id,
+        ),
+        ("HERDR_TAB_ID", &session.herdr_environment.tab_id),
+    ] {
+        if let Some(value) = value {
+            environment.push((key.into(), value.clone()));
+        }
+    }
+    environment
+}
+
+fn nonempty_process_environment(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
 fn workspace_overlay_command(prefix: &str, hide_keys: &[String]) -> String {
@@ -419,8 +496,8 @@ mod tests {
     #[test]
     fn workspace_mode_keeps_the_full_config_and_reapplies_its_overlay() {
         let hide_keys = ["M-i".into(), "M-o".into()];
-        let args = server_configuration_args(crate::config::TmuxMode::Workspace, "C-g", &hide_keys);
-        let overlay = workspace_overlay_command("C-g", &hide_keys);
+        let args = server_configuration_args(crate::config::TmuxMode::Workspace, "C-a", &hide_keys);
+        let overlay = workspace_overlay_command("C-a", &hide_keys);
 
         assert_eq!(
             tmux_args(crate::config::TmuxMode::Workspace),
@@ -428,7 +505,7 @@ mod tests {
         );
         assert!(args
             .windows(4)
-            .any(|part| part == ["set-option", "-g", "prefix", "C-g"]));
+            .any(|part| part == ["set-option", "-g", "prefix", "C-a"]));
         assert!(args
             .windows(4)
             .any(|part| part == ["bind-key", "-n", "M-o", "detach-client"]));
@@ -436,6 +513,16 @@ mod tests {
             .windows(4)
             .any(|part| part == ["set-option", "-g", "status", "off"]));
         assert!(!args.iter().any(|part| part == "unbind-key"));
+
+        let first_hook = args
+            .iter()
+            .position(|part| part == "after-set-option[999]")
+            .unwrap();
+        let prefix = args
+            .windows(4)
+            .position(|part| part == ["set-option", "-g", "prefix", "C-a"])
+            .unwrap();
+        assert!(first_hook < prefix);
 
         for hook in [
             "after-set-option[999]",
@@ -456,27 +543,50 @@ mod tests {
             tmx_type: "sh".into(),
             clear_tmux_env: false,
             tmux_mode: TmuxMode::Workspace,
-            tmux_prefix: Some("C-g".into()),
+            tmux_prefix: Some("C-a".into()),
             key: Some("alt+o".into()),
         };
-        let args = configured_session_args(
-            &scratch,
-            "hs/shell/server/pane",
-            "pane",
-            Path::new("/tmp/project"),
-            "C-g",
-            &["M-i".into(), "M-o".into()],
-        );
+        let herdr_environment = HerdrEnvironment {
+            socket_path: Some("/tmp/herdr.sock".into()),
+            workspace_id: Some("w2".into()),
+            tab_id: Some("w2:t4".into()),
+        };
+        let hide_keys = ["M-i".into(), "M-o".into()];
+        let session = SessionSpec {
+            name: "hs/shell/server/pane",
+            scratch: &scratch,
+            pane_id: "pane",
+            cwd: Path::new("/tmp/project"),
+            prefix: "C-a",
+            hide_keys: &hide_keys,
+            herdr_environment: &herdr_environment,
+        };
+        let args = configured_session_args(&session);
 
         let start = args.iter().position(|part| part == "start-server").unwrap();
         let prefix = args
             .windows(4)
-            .position(|part| part == ["set-option", "-g", "prefix", "C-g"])
+            .position(|part| part == ["set-option", "-g", "prefix", "C-a"])
             .unwrap();
         let session = args.iter().position(|part| part == "new-session").unwrap();
 
         assert!(start < prefix);
         assert!(prefix < session);
+        for variable in [
+            "HERDR_ENV=1",
+            "HERDR_PANE_ID=pane",
+            "HERDR_SCRATCH_NAME=shell",
+            "HERDR_SCRATCH_PREFIX=C-a",
+            "HERDR_SCRATCH_SOURCE_CWD=/tmp/project",
+            "HERDR_SOCKET_PATH=/tmp/herdr.sock",
+            "HERDR_WORKSPACE_ID=w2",
+            "HERDR_TAB_ID=w2:t4",
+        ] {
+            assert!(
+                args.iter().any(|part| part == variable),
+                "missing {variable}"
+            );
+        }
         assert_eq!(&args[args.len() - 2..], ["fish", "-l"]);
     }
 
@@ -494,8 +604,14 @@ mod tests {
             Path::new("/new/project"),
             ENV_VERSION,
         ));
-        assert!(session_metadata_needs_recreation(
+        assert!(!session_metadata_needs_recreation(
             TmuxMode::Workspace,
+            "/old/project",
+            Path::new("/old/project"),
+            "outdated",
+        ));
+        assert!(session_metadata_needs_recreation(
+            TmuxMode::Minimal,
             "/old/project",
             Path::new("/old/project"),
             "outdated",

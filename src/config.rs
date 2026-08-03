@@ -361,7 +361,7 @@ mod tests {
 
         let shell = config.scratch("shell").unwrap();
         assert_eq!(shell.tmux_mode, TmuxMode::Workspace);
-        assert_eq!(shell.tmux_prefix.as_deref(), Some("C-g"));
+        assert_eq!(shell.tmux_prefix.as_deref(), Some("C-a"));
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_explicit_tmux_prefix() {
-        let source = DEFAULT_CONFIG.replace("tmux_prefix: ctrl+g", "tmux_prefix: cmd+g");
+        let source = DEFAULT_CONFIG.replace("tmux_prefix: ctrl+a", "tmux_prefix: cmd+a");
 
         assert!(Config::parse(&source).is_err());
     }
