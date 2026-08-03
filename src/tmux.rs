@@ -7,10 +7,17 @@ use std::process::{Command, Output};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::config::ResolvedScratch;
+use crate::config::{ResolvedScratch, TmuxMode};
 
-const SERVER_NAME: &str = "shadowfax-herdr-scratch";
+const MINIMAL_SERVER_NAME: &str = "shadowfax-herdr-scratch";
+const WORKSPACE_SERVER_NAME: &str = "shadowfax-herdr-workspace";
+const WORKSPACE_HOOK_INDEX: u16 = 999;
 const ENV_VERSION: &str = "1";
+
+struct TmuxServer<'a> {
+    state_dir: &'a Path,
+    mode: TmuxMode,
+}
 
 pub fn run(
     scratch: &ResolvedScratch,
@@ -22,15 +29,19 @@ pub fn run(
     hide_keys: &[String],
 ) -> Result<()> {
     ensure_state_dir(state_dir)?;
-    configure_server(state_dir, prefix, hide_keys)?;
+    let server = TmuxServer {
+        state_dir,
+        mode: scratch.tmux_mode,
+    };
+    server.configure(prefix, hide_keys)?;
 
     let name = session_name(&scratch.name, pane_id, server_identity);
-    if session_needs_recreation(state_dir, &name, cwd)? {
-        kill_session(state_dir, &name)?;
-        create_session(state_dir, &name, scratch, pane_id, cwd)?;
+    if server.session_needs_recreation(&name, cwd)? {
+        server.kill_session(&name)?;
+        server.create_session(&name, scratch, pane_id, cwd)?;
     }
 
-    let mut command = tmux_command(state_dir);
+    let mut command = server.command();
     command.args(["attach-session", "-t", &exact_target(&name)]);
     let _status = command
         .status()
@@ -45,90 +56,102 @@ fn ensure_state_dir(state_dir: &Path) -> Result<()> {
         .with_context(|| format!("failed to secure {}", state_dir.display()))
 }
 
-fn configure_server(state_dir: &Path, prefix: &str, hide_keys: &[String]) -> Result<()> {
-    let args = server_configuration_args(prefix, hide_keys);
-    checked_output(
-        tmux_command(state_dir).args(args),
-        "configure tmux scratch server",
-    )?;
-    Ok(())
-}
-
-fn session_needs_recreation(state_dir: &Path, name: &str, cwd: &Path) -> Result<bool> {
-    if !session_exists(state_dir, name)? {
-        return Ok(true);
+impl TmuxServer<'_> {
+    fn configure(&self, prefix: &str, hide_keys: &[String]) -> Result<()> {
+        let args = server_configuration_args(self.mode, prefix, hide_keys);
+        checked_output(self.command().args(args), "configure tmux scratch server")?;
+        Ok(())
     }
-    let stored_cwd = session_option(state_dir, name, "@herdr_source_cwd")?;
-    let version = session_option(state_dir, name, "@herdr_env_version")?;
-    Ok(stored_cwd != cwd.to_string_lossy() || version != ENV_VERSION)
-}
 
-fn create_session(
-    state_dir: &Path,
-    name: &str,
-    scratch: &ResolvedScratch,
-    pane_id: &str,
-    cwd: &Path,
-) -> Result<()> {
-    let mut command = tmux_command(state_dir);
-    command.args([
-        "new-session",
-        "-d",
-        "-s",
-        name,
-        "-c",
-        &cwd.to_string_lossy(),
-        "-e",
-        "TMX_SCRATCH=1",
-        "-e",
-        &format!("TMX_SCRATCH_TYPE={}", scratch.tmx_type),
-        "-e",
-        &format!("TMX_PARENT_PANE={pane_id}"),
-        "-e",
-        &format!("HERDR_SCRATCH_KIND={}", scratch.name),
-        "-e",
-        &format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
-    ]);
-    command.args(&scratch.command);
-    checked_output(&mut command, "create tmux scratch session")?;
-    set_session_option(state_dir, name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
-    set_session_option(state_dir, name, "@herdr_source_pane", pane_id)?;
-    set_session_option(state_dir, name, "@herdr_env_version", ENV_VERSION)
-}
-
-fn kill_session(state_dir: &Path, name: &str) -> Result<()> {
-    if !session_exists(state_dir, name)? {
-        return Ok(());
+    fn session_needs_recreation(&self, name: &str, cwd: &Path) -> Result<bool> {
+        if !self.session_exists(name)? {
+            return Ok(true);
+        }
+        let stored_cwd = self.session_option(name, "@herdr_source_cwd")?;
+        let version = self.session_option(name, "@herdr_env_version")?;
+        Ok(stored_cwd != cwd.to_string_lossy() || version != ENV_VERSION)
     }
-    checked_output(
-        tmux_command(state_dir).args(["kill-session", "-t", &exact_target(name)]),
-        "replace stale tmux scratch session",
-    )?;
-    Ok(())
-}
 
-fn session_exists(state_dir: &Path, name: &str) -> Result<bool> {
-    let output = tmux_command(state_dir)
-        .args(["has-session", "-t", &exact_target(name)])
-        .output()
-        .context("failed to inspect tmux scratch session")?;
-    Ok(output.status.success())
-}
+    fn create_session(
+        &self,
+        name: &str,
+        scratch: &ResolvedScratch,
+        pane_id: &str,
+        cwd: &Path,
+    ) -> Result<()> {
+        let mut command = self.command();
+        command.args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-c",
+            &cwd.to_string_lossy(),
+            "-e",
+            "TMX_SCRATCH=1",
+            "-e",
+            &format!("TMX_SCRATCH_TYPE={}", scratch.tmx_type),
+            "-e",
+            &format!("TMX_PARENT_PANE={pane_id}"),
+            "-e",
+            &format!("HERDR_SCRATCH_KIND={}", scratch.name),
+            "-e",
+            &format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
+        ]);
+        command.args(&scratch.command);
+        checked_output(&mut command, "create tmux scratch session")?;
+        self.set_session_option(name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
+        self.set_session_option(name, "@herdr_source_pane", pane_id)?;
+        self.set_session_option(name, "@herdr_env_version", ENV_VERSION)
+    }
 
-fn session_option(state_dir: &Path, name: &str, key: &str) -> Result<String> {
-    let output = checked_output(
-        tmux_command(state_dir).args(["show-options", "-qv", "-t", name, key]),
-        "read tmux scratch session metadata",
-    )?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
+    fn kill_session(&self, name: &str) -> Result<()> {
+        if !self.session_exists(name)? {
+            return Ok(());
+        }
+        checked_output(
+            self.command()
+                .args(["kill-session", "-t", &exact_target(name)]),
+            "replace stale tmux scratch session",
+        )?;
+        Ok(())
+    }
 
-fn set_session_option(state_dir: &Path, name: &str, key: &str, value: &str) -> Result<()> {
-    checked_output(
-        tmux_command(state_dir).args(["set-option", "-t", name, key, value]),
-        "write tmux scratch session metadata",
-    )?;
-    Ok(())
+    fn session_exists(&self, name: &str) -> Result<bool> {
+        let output = self
+            .command()
+            .args(["has-session", "-t", &exact_target(name)])
+            .output()
+            .context("failed to inspect tmux scratch session")?;
+        Ok(output.status.success())
+    }
+
+    fn session_option(&self, name: &str, key: &str) -> Result<String> {
+        let output = checked_output(
+            self.command()
+                .args(["show-options", "-qv", "-t", name, key]),
+            "read tmux scratch session metadata",
+        )?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn set_session_option(&self, name: &str, key: &str, value: &str) -> Result<()> {
+        checked_output(
+            self.command().args(["set-option", "-t", name, key, value]),
+            "write tmux scratch session metadata",
+        )?;
+        Ok(())
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new("tmux");
+        command
+            .args(tmux_args(self.mode))
+            .env("TMUX_TMPDIR", self.state_dir)
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
+        command
+    }
 }
 
 fn checked_output(command: &mut Command, operation: &str) -> Result<Output> {
@@ -147,17 +170,21 @@ fn checked_output(command: &mut Command, operation: &str) -> Result<Output> {
     Ok(output)
 }
 
-fn tmux_command(state_dir: &Path) -> Command {
-    let mut command = Command::new("tmux");
-    command
-        .args(["-L", SERVER_NAME, "-f", "/dev/null"])
-        .env("TMUX_TMPDIR", state_dir)
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE");
-    command
+fn tmux_args(mode: TmuxMode) -> Vec<&'static str> {
+    match mode {
+        TmuxMode::Minimal => vec!["-L", MINIMAL_SERVER_NAME, "-f", "/dev/null"],
+        TmuxMode::Workspace => vec!["-L", WORKSPACE_SERVER_NAME],
+    }
 }
 
-fn server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> {
+fn server_configuration_args(mode: TmuxMode, prefix: &str, hide_keys: &[String]) -> Vec<String> {
+    match mode {
+        TmuxMode::Minimal => minimal_server_configuration_args(prefix, hide_keys),
+        TmuxMode::Workspace => workspace_server_configuration_args(prefix, hide_keys),
+    }
+}
+
+fn minimal_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     for command in [
         vec!["start-server"],
@@ -194,6 +221,79 @@ fn server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> 
             key.clone(),
             "detach-client".into(),
         ]);
+    }
+    args
+}
+
+fn workspace_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<String> {
+    let overlay = workspace_overlay_command(prefix, hide_keys);
+    let mut commands = vec![vec!["start-server".into()]];
+    commands.extend(workspace_overlay_commands(prefix, hide_keys));
+    for hook in ["after-set-option", "after-bind-key", "after-unbind-key"] {
+        commands.push(vec![
+            "set-hook".into(),
+            "-g".into(),
+            format!("{hook}[{WORKSPACE_HOOK_INDEX}]"),
+            overlay.clone(),
+        ]);
+    }
+    flatten_commands(commands)
+}
+
+fn workspace_overlay_command(prefix: &str, hide_keys: &[String]) -> String {
+    workspace_overlay_commands(prefix, hide_keys)
+        .into_iter()
+        .map(|command| command.join(" "))
+        .collect::<Vec<_>>()
+        .join(" ; ")
+}
+
+fn workspace_overlay_commands(prefix: &str, hide_keys: &[String]) -> Vec<Vec<String>> {
+    let mut commands = vec![
+        vec![
+            "set-option".into(),
+            "-g".into(),
+            "@herdr_scratch_workspace".into(),
+            "1".into(),
+        ],
+        vec![
+            "set-option".into(),
+            "-g".into(),
+            "prefix".into(),
+            prefix.into(),
+        ],
+        vec![
+            "set-option".into(),
+            "-g".into(),
+            "prefix2".into(),
+            "None".into(),
+        ],
+        vec![
+            "bind-key".into(),
+            "-T".into(),
+            "prefix".into(),
+            prefix.into(),
+            "send-prefix".into(),
+        ],
+    ];
+    commands.extend(hide_keys.iter().map(|key| {
+        vec![
+            "bind-key".into(),
+            "-n".into(),
+            key.clone(),
+            "detach-client".into(),
+        ]
+    }));
+    commands
+}
+
+fn flatten_commands(commands: Vec<Vec<String>>) -> Vec<String> {
+    let mut args = Vec::new();
+    for command in commands {
+        if !args.is_empty() {
+            args.push(";".into());
+        }
+        args.extend(command);
     }
     args
 }
@@ -257,8 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn nested_tmux_uses_the_same_toggle_keys() {
-        let args = server_configuration_args("C-a", &["M-i".into(), "M-o".into(), "M-t".into()]);
+    fn minimal_mode_keeps_the_stripped_down_server() {
+        let args = server_configuration_args(
+            crate::config::TmuxMode::Minimal,
+            "C-a",
+            &["M-i".into(), "M-o".into()],
+        );
 
         assert!(args
             .windows(4)
@@ -267,10 +371,46 @@ mod tests {
             .windows(4)
             .any(|part| part == ["bind-key", "-n", "M-o", "detach-client"]));
         assert!(args
-            .windows(4)
-            .any(|part| part == ["bind-key", "-n", "M-t", "detach-client"]));
-        assert!(args
             .windows(5)
             .any(|part| part == ["bind-key", "-T", "prefix", "C-a", "send-prefix"]));
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["set-option", "-g", "status", "off"]));
+        assert_eq!(
+            tmux_args(crate::config::TmuxMode::Minimal),
+            ["-L", MINIMAL_SERVER_NAME, "-f", "/dev/null"]
+        );
+    }
+
+    #[test]
+    fn workspace_mode_keeps_the_full_config_and_reapplies_its_overlay() {
+        let hide_keys = ["M-i".into(), "M-o".into()];
+        let args = server_configuration_args(crate::config::TmuxMode::Workspace, "C-g", &hide_keys);
+        let overlay = workspace_overlay_command("C-g", &hide_keys);
+
+        assert_eq!(
+            tmux_args(crate::config::TmuxMode::Workspace),
+            ["-L", WORKSPACE_SERVER_NAME]
+        );
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["set-option", "-g", "prefix", "C-g"]));
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["bind-key", "-n", "M-o", "detach-client"]));
+        assert!(!args
+            .windows(4)
+            .any(|part| part == ["set-option", "-g", "status", "off"]));
+        assert!(!args.iter().any(|part| part == "unbind-key"));
+
+        for hook in [
+            "after-set-option[999]",
+            "after-bind-key[999]",
+            "after-unbind-key[999]",
+        ] {
+            assert!(args
+                .windows(4)
+                .any(|part| part == ["set-hook", "-g", hook, &overlay]));
+        }
     }
 }
