@@ -342,17 +342,13 @@ mod tests {
     }
 
     #[test]
-    fn resolves_commands_and_tmux_shell() {
+    fn resolves_commands_and_shell() {
         let config = config();
 
         assert_eq!(config.scratch("nvim").unwrap().command, ["nvim"]);
-        let tmux = config.scratch("tmux").unwrap();
-        assert_eq!(
-            &tmux.command[..7],
-            ["env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "TMUX_TMPDIR"]
-        );
-        assert_eq!(tmux.command.last().map(String::as_str), Some("-l"));
-        assert!(tmux.clear_tmux_env);
+        let shell = config.scratch("shell").unwrap();
+        assert_eq!(shell.command.last().map(String::as_str), Some("-l"));
+        assert!(!shell.clear_tmux_env);
     }
 
     #[test]
@@ -366,6 +362,21 @@ mod tests {
         let shell = config.scratch("shell").unwrap();
         assert_eq!(shell.tmux_mode, TmuxMode::Workspace);
         assert_eq!(shell.tmux_prefix.as_deref(), Some("C-g"));
+    }
+
+    #[test]
+    fn default_scratches_are_nvim_and_shell() {
+        let config = config();
+
+        assert_eq!(
+            config
+                .scratches
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["nvim", "shell"]
+        );
+        assert!(config.scratch("tmux").is_err());
     }
 
     #[test]

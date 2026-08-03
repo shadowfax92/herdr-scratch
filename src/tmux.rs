@@ -33,12 +33,13 @@ pub fn run(
         state_dir,
         mode: scratch.tmux_mode,
     };
-    server.configure(prefix, hide_keys)?;
 
     let name = session_name(&scratch.name, pane_id, server_identity);
     if server.session_needs_recreation(&name, cwd)? {
         server.kill_session(&name)?;
-        server.create_session(&name, scratch, pane_id, cwd)?;
+        server.create_session(&name, scratch, pane_id, cwd, prefix, hide_keys)?;
+    } else {
+        server.configure(prefix, hide_keys)?;
     }
 
     let mut command = server.command();
@@ -78,27 +79,13 @@ impl TmuxServer<'_> {
         scratch: &ResolvedScratch,
         pane_id: &str,
         cwd: &Path,
+        prefix: &str,
+        hide_keys: &[String],
     ) -> Result<()> {
         let mut command = self.command();
-        command.args([
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-c",
-            &cwd.to_string_lossy(),
-            "-e",
-            "TMX_SCRATCH=1",
-            "-e",
-            &format!("TMX_SCRATCH_TYPE={}", scratch.tmx_type),
-            "-e",
-            &format!("TMX_PARENT_PANE={pane_id}"),
-            "-e",
-            &format!("HERDR_SCRATCH_KIND={}", scratch.name),
-            "-e",
-            &format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
-        ]);
-        command.args(&scratch.command);
+        command.args(configured_session_args(
+            scratch, name, pane_id, cwd, prefix, hide_keys,
+        ));
         checked_output(&mut command, "create tmux scratch session")?;
         self.set_session_option(name, "@herdr_source_cwd", &cwd.to_string_lossy())?;
         self.set_session_option(name, "@herdr_source_pane", pane_id)?;
@@ -238,6 +225,38 @@ fn workspace_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Ve
         ]);
     }
     flatten_commands(commands)
+}
+
+fn configured_session_args(
+    scratch: &ResolvedScratch,
+    name: &str,
+    pane_id: &str,
+    cwd: &Path,
+    prefix: &str,
+    hide_keys: &[String],
+) -> Vec<String> {
+    let mut args = server_configuration_args(scratch.tmux_mode, prefix, hide_keys);
+    args.push(";".into());
+    args.extend([
+        "new-session".into(),
+        "-d".into(),
+        "-s".into(),
+        name.into(),
+        "-c".into(),
+        cwd.to_string_lossy().into_owned(),
+        "-e".into(),
+        "TMX_SCRATCH=1".into(),
+        "-e".into(),
+        format!("TMX_SCRATCH_TYPE={}", scratch.tmx_type),
+        "-e".into(),
+        format!("TMX_PARENT_PANE={pane_id}"),
+        "-e".into(),
+        format!("HERDR_SCRATCH_KIND={}", scratch.name),
+        "-e".into(),
+        format!("HERDR_SCRATCH_SOURCE_PANE={pane_id}"),
+    ]);
+    args.extend(scratch.command.iter().cloned());
+    args
 }
 
 fn workspace_overlay_command(prefix: &str, hide_keys: &[String]) -> String {
@@ -412,5 +431,37 @@ mod tests {
                 .windows(4)
                 .any(|part| part == ["set-hook", "-g", hook, &overlay]));
         }
+    }
+
+    #[test]
+    fn new_session_is_created_in_the_configured_server_queue() {
+        let scratch = ResolvedScratch {
+            name: "shell".into(),
+            command: vec!["fish".into(), "-l".into()],
+            tmx_type: "sh".into(),
+            clear_tmux_env: false,
+            tmux_mode: TmuxMode::Workspace,
+            tmux_prefix: Some("C-g".into()),
+            key: Some("alt+o".into()),
+        };
+        let args = configured_session_args(
+            &scratch,
+            "hs/shell/server/pane",
+            "pane",
+            Path::new("/tmp/project"),
+            "C-g",
+            &["M-i".into(), "M-o".into()],
+        );
+
+        let start = args.iter().position(|part| part == "start-server").unwrap();
+        let prefix = args
+            .windows(4)
+            .position(|part| part == ["set-option", "-g", "prefix", "C-g"])
+            .unwrap();
+        let session = args.iter().position(|part| part == "new-session").unwrap();
+
+        assert!(start < prefix);
+        assert!(prefix < session);
+        assert_eq!(&args[args.len() - 2..], ["fish", "-l"]);
     }
 }

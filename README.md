@@ -12,14 +12,14 @@
 
 </div>
 
-Herdr Scratch gives every Herdr pane its own persistent Neovim, shell, and tmux-session popup. Hide a popup and open it again later: the process, working state, and terminal contents are still there.
+Herdr Scratch gives every Herdr pane its own persistent Neovim scratch and full tmux shell workspace. Hide a popup and open it again later: the processes, windows, panes, and terminal contents are still there.
 
 - **Native popups** — Herdr owns placement, focus, dimensions, and backdrop rendering.
-- **Stateful toggles** — a private tmux server keeps each scratch alive while hidden.
-- **Per-pane identities** — Neovim, shell, and tmux scratches never collide across source panes.
+- **Stateful toggles** — private tmux servers keep each scratch alive while hidden.
+- **Per-pane identities** — Neovim scratches and shell workspaces never collide across source panes.
 - **Responsive profiles** — popup dimensions can follow the active Herdr client width.
 - **Project-aware cwd** — moving the source pane to another directory recreates its scratches there.
-- **Familiar controls** — the current Herdr prefix is mirrored inside the scratch session.
+- **Familiar controls** — Neovim mirrors Herdr's prefix; the shell loads your full tmux configuration under a separate prefix.
 
 ## Install
 
@@ -29,7 +29,7 @@ Requires macOS, [Herdr](https://herdr.dev) 0.7.5 or newer, tmux, and a Rust tool
 herdr plugin install shadowfax92/herdr-scratch
 ```
 
-Add the three actions to `~/.config/herdr/config.toml`:
+Add the two actions to `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
@@ -43,12 +43,6 @@ key = "alt+o"
 type = "plugin_action"
 command = "shadowfax.scratch.toggle-shell"
 description = "Toggle pane scratch shell"
-
-[[keys.command]]
-key = "alt+t"
-type = "plugin_action"
-command = "shadowfax.scratch.toggle-tmux"
-description = "Toggle pane tmux sessions"
 ```
 
 Reload the running server:
@@ -62,13 +56,11 @@ herdr server reload-config
 | Key | Result |
 | --- | --- |
 | `Alt-i` | Toggle this pane's persistent Neovim |
-| `Alt-o` | Toggle this pane's persistent login shell |
-| `Alt-t` | Toggle a shell prepared for your normal tmux server |
+| `Alt-o` | Toggle this pane's full tmux shell workspace |
 | any configured scratch key | Hide the currently open scratch popup |
-| `prefix x` | Confirm and terminate the current scratch session |
 | `prefix prefix` | Send the prefix through to the program inside |
 
-For example, with Herdr's prefix set to `Ctrl-a`, use `Ctrl-a x` to terminate a scratch. Hiding and terminating are different: hiding preserves state; terminating starts a fresh session the next time you toggle it.
+The minimal Neovim scratch inherits Herdr's prefix. The shell workspace uses its configured `tmux_prefix` and otherwise retains your normal tmux bindings. With the default configuration, `Ctrl-g` controls shell windows and panes while `Ctrl-a` remains available to Herdr and your normal tmux server.
 
 ## Configuration
 
@@ -92,13 +84,9 @@ scratches:
   shell:
     shell: true
     tmx_type: sh
+    tmux_mode: workspace
+    tmux_prefix: ctrl+g
     key: alt+o
-
-  tmux:
-    shell: true
-    clear_tmux_env: true
-    tmx_type: tmux
-    key: alt+t
 ```
 
 Popup sizes accept either positive cell counts or percentages from `1%` through `100%`.
@@ -122,18 +110,13 @@ profiles:
       shell: { width: "80%", height: "99%" }
 ```
 
-The configuration is loaded on every toggle, so size and command changes do not require a Herdr reload. If a command changes while its scratch session is alive, terminate that session once with `prefix x` before reopening it.
+The configuration is loaded on every toggle, so size and command changes do not require a Herdr reload. Minimal scratches inherit Herdr's prefix. A `tmux_mode: workspace` scratch requires an explicit `tmux_prefix`, loads the normal user tmux configuration, and keeps that configuration's status, navigation, plugins, and session switching.
 
-## Existing tmux sessions
+## Full tmux workspace
 
-The `tmux` scratch deliberately removes `TMUX`, `TMUX_PANE`, and `TMUX_TMPDIR` before starting its shell. Commands inside it therefore target your normal tmux server instead of Herdr Scratch's private server:
+The shell workspace runs on its own named tmux server, separate from both the normal tmux server and the minimal Neovim scratch server. Your normal tmux configuration is loaded without copying it. Scratch overlays only the workspace prefix and configured popup-hide keys.
 
-```sh
-tmux list-sessions
-tmux attach -t <session>
-```
-
-Hiding the popup leaves both the attached client and the target tmux session running.
+Pressing `Alt-o` inside the popup detaches its tmux client. The popup command then exits, so Herdr closes the popup while the workspace server keeps every window, pane, and process alive. The next `Alt-o` from the same Herdr pane attaches to that session again. Configuration reloads reapply the Scratch overlay automatically.
 
 ## Add another scratch
 
@@ -149,6 +132,8 @@ scratches:
     key: alt+g
 ```
 
+Scratches use the minimal server unless they set `tmux_mode: workspace` together with a `tmux_prefix`.
+
 Add a matching action to `herdr-plugin.toml`:
 
 ```toml
@@ -163,7 +148,7 @@ Then bind `shadowfax.scratch.toggle-lazygit` in Herdr and re-link the local chec
 
 ## How persistence works
 
-Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server under the plugin state directory owns the long-running process. The popup client detaches when hidden and reattaches on the next toggle.
+Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server under the plugin state directory owns the long-running process. Minimal and workspace scratches use separate servers so their prefix, status, and key behavior remain independent. The popup client detaches when hidden and reattaches on the next toggle; persistence ends if its private tmux server exits.
 
 Scratch sessions expose these compatibility variables:
 

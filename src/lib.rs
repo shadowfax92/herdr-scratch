@@ -93,3 +93,22 @@ pub fn show_config() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use toml_edit::DocumentMut;
+
+    #[test]
+    fn manifest_exposes_only_nvim_and_shell_toggles() {
+        let manifest = include_str!("../herdr-plugin.toml")
+            .parse::<DocumentMut>()
+            .unwrap();
+        let actions = manifest["actions"].as_array_of_tables().unwrap();
+        let ids = actions
+            .iter()
+            .map(|action| action["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["toggle-nvim", "toggle-shell"]);
+    }
+}

@@ -13,30 +13,21 @@ scratches:
     tmux_prefix: ctrl+g
     key: alt+o
 
-  tmux:
-    shell: true
-    clear_tmux_env: true
-    tmx_type: tmux
-    key: alt+t
-
 profiles:
   - name: laptop
     match: { max_client_width: 310 }
     popups:
       nvim: { width: "95%", height: "99%" }
       shell: { width: "95%", height: "99%" }
-      tmux: { width: "95%", height: "99%" }
 
   - name: 2-3-ultrawide
     match: { max_client_width: 350 }
     popups:
       nvim: { width: "90%", height: "99%" }
       shell: { width: "90%", height: "99%" }
-      tmux: { width: "90%", height: "99%" }
 
   - name: full-ultrawide
     match: { min_client_width: 400 }
     popups:
       nvim: { width: "70%", height: "99%" }
       shell: { width: "80%", height: "99%" }
-      tmux: { width: "80%", height: "99%" }

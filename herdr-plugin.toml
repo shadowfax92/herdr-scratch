@@ -22,13 +22,6 @@ description = "Open or hide the persistent shell popup for the focused pane."
 contexts = ["pane"]
 command = ["./target/release/herdr-scratch", "toggle", "--scratch", "shell"]
 
-[[actions]]
-id = "toggle-tmux"
-title = "Toggle tmux sessions scratch"
-description = "Open or hide a persistent shell prepared for attaching tmux sessions."
-contexts = ["pane"]
-command = ["./target/release/herdr-scratch", "toggle", "--scratch", "tmux"]
-
 [[panes]]
 id = "scratch"
 title = "scratch"
