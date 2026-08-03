@@ -19,9 +19,12 @@ pub fn toggle(name: &str) -> Result<()> {
         None => herdr.current_pane()?,
     };
     let config = LoadedConfig::load()?;
-    config.scratch(name)?;
+    let scratch = config.scratch(name)?;
     let popup = config.popup(name, herdr.client_width(&source.pane_id).ok())?;
-    let tmux_prefix = prefix::tmux_prefix_from_user_config()?;
+    let tmux_prefix = match scratch.tmux_prefix {
+        Some(prefix) => prefix,
+        None => prefix::tmux_prefix_from_user_config()?,
+    };
     herdr.open_popup(PopupRequest {
         scratch_name: name.into(),
         source_pane_id: source.pane_id,

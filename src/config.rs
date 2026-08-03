@@ -31,9 +31,20 @@ struct ScratchDefinition {
     shell: bool,
     #[serde(default)]
     clear_tmux_env: bool,
+    #[serde(default)]
+    tmux_mode: TmuxMode,
+    tmux_prefix: Option<String>,
     tmx_type: Option<String>,
     key: Option<String>,
     popup: Option<PopupSize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TmuxMode {
+    #[default]
+    Minimal,
+    Workspace,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -66,6 +77,8 @@ pub struct ResolvedScratch {
     pub command: Vec<String>,
     pub tmx_type: String,
     pub clear_tmux_env: bool,
+    pub tmux_mode: TmuxMode,
+    pub tmux_prefix: Option<String>,
     pub key: Option<String>,
 }
 
@@ -142,6 +155,13 @@ impl Config {
             if scratch.command.iter().any(|part| part.is_empty()) {
                 bail!("scratch `{name}` contains an empty command argument");
             }
+            if scratch.tmux_mode == TmuxMode::Workspace && scratch.tmux_prefix.is_none() {
+                bail!("scratch `{name}` workspace mode requires `tmux_prefix`");
+            }
+            if let Some(prefix) = &scratch.tmux_prefix {
+                crate::prefix::normalize_tmux_key(prefix)
+                    .with_context(|| format!("scratch `{name}` has invalid `tmux_prefix`"))?;
+            }
             if let Some(popup) = &scratch.popup {
                 validate_popup(popup)?;
             }
@@ -202,6 +222,12 @@ impl Config {
             command,
             tmx_type: scratch.tmx_type.clone().unwrap_or_else(|| name.into()),
             clear_tmux_env: scratch.clear_tmux_env,
+            tmux_mode: scratch.tmux_mode,
+            tmux_prefix: scratch
+                .tmux_prefix
+                .as_deref()
+                .map(crate::prefix::normalize_tmux_key)
+                .transpose()?,
             key: scratch.key.clone(),
         })
     }
@@ -327,6 +353,26 @@ mod tests {
         );
         assert_eq!(tmux.command.last().map(String::as_str), Some("-l"));
         assert!(tmux.clear_tmux_env);
+    }
+
+    #[test]
+    fn resolves_workspace_mode_and_prefix() {
+        let config = config();
+
+        let nvim = config.scratch("nvim").unwrap();
+        assert_eq!(nvim.tmux_mode, TmuxMode::Minimal);
+        assert_eq!(nvim.tmux_prefix, None);
+
+        let shell = config.scratch("shell").unwrap();
+        assert_eq!(shell.tmux_mode, TmuxMode::Workspace);
+        assert_eq!(shell.tmux_prefix.as_deref(), Some("C-g"));
+    }
+
+    #[test]
+    fn rejects_invalid_explicit_tmux_prefix() {
+        let source = DEFAULT_CONFIG.replace("tmux_prefix: ctrl+g", "tmux_prefix: cmd+g");
+
+        assert!(Config::parse(&source).is_err());
     }
 
     #[test]

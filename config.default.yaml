@@ -9,6 +9,8 @@ scratches:
   shell:
     shell: true
     tmx_type: sh
+    tmux_mode: workspace
+    tmux_prefix: ctrl+g
     key: alt+o
 
   tmux:
