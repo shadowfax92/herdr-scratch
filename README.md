@@ -39,7 +39,7 @@ command = "shadowfax.scratch.toggle-nvim"
 description = "Toggle pane scratch nvim"
 
 [[keys.command]]
-key = "alt+o"
+key = "alt+0"
 type = "plugin_action"
 command = "shadowfax.scratch.toggle-shell"
 description = "Toggle pane scratch shell"
@@ -56,7 +56,7 @@ herdr server reload-config
 | Key | Result |
 | --- | --- |
 | `Alt-i` | Toggle this pane's persistent Neovim |
-| `Alt-o` | Toggle this pane's full tmux shell workspace |
+| `Alt-0` | Toggle this pane's full tmux shell workspace |
 | any configured scratch key | Hide the currently open scratch popup |
 | `prefix prefix` | Send the prefix through to the program inside |
 
@@ -86,7 +86,7 @@ scratches:
     tmx_type: sh
     tmux_mode: workspace
     tmux_prefix: ctrl+a
-    key: alt+o
+    key: alt+0
 ```
 
 Popup sizes accept either positive cell counts or percentages from `1%` through `100%`.
@@ -116,7 +116,7 @@ The configuration is loaded on every toggle, so size and command changes do not 
 
 The shell workspace runs on its own named tmux server, separate from both the normal tmux server and the minimal Neovim scratch server. Your normal tmux configuration is loaded without copying it. Scratch overlays only the workspace prefix and configured popup-hide keys.
 
-Pressing `Alt-o` inside the popup detaches its tmux client. The popup command then exits, so Herdr closes the popup while the workspace server keeps every window, pane, and process alive. The next `Alt-o` from the same Herdr pane attaches to that session again. Configuration reloads reapply the Scratch overlay automatically.
+Pressing `Alt-0` inside the popup detaches its tmux client. The popup command then exits, so Herdr closes the popup while the workspace server keeps every window, pane, and process alive. The next `Alt-0` from the same Herdr pane attaches to that session again. Configuration reloads reapply the Scratch overlay automatically.
 
 ## Add another scratch
 

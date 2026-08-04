@@ -472,7 +472,7 @@ mod tests {
         let args = server_configuration_args(
             crate::config::TmuxMode::Minimal,
             "C-a",
-            &["M-i".into(), "M-o".into()],
+            &["M-i".into(), "M-0".into()],
         );
 
         assert!(args
@@ -480,7 +480,7 @@ mod tests {
             .any(|part| part == ["bind-key", "-n", "M-i", "detach-client"]));
         assert!(args
             .windows(4)
-            .any(|part| part == ["bind-key", "-n", "M-o", "detach-client"]));
+            .any(|part| part == ["bind-key", "-n", "M-0", "detach-client"]));
         assert!(args
             .windows(5)
             .any(|part| part == ["bind-key", "-T", "prefix", "C-a", "send-prefix"]));
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn workspace_mode_keeps_the_full_config_and_reapplies_its_overlay() {
-        let hide_keys = ["M-i".into(), "M-o".into()];
+        let hide_keys = ["M-i".into(), "M-0".into()];
         let args = server_configuration_args(crate::config::TmuxMode::Workspace, "C-a", &hide_keys);
         let overlay = workspace_overlay_command("C-a", &hide_keys);
 
@@ -508,7 +508,7 @@ mod tests {
             .any(|part| part == ["set-option", "-g", "prefix", "C-a"]));
         assert!(args
             .windows(4)
-            .any(|part| part == ["bind-key", "-n", "M-o", "detach-client"]));
+            .any(|part| part == ["bind-key", "-n", "M-0", "detach-client"]));
         assert!(!args
             .windows(4)
             .any(|part| part == ["set-option", "-g", "status", "off"]));
@@ -544,14 +544,14 @@ mod tests {
             clear_tmux_env: false,
             tmux_mode: TmuxMode::Workspace,
             tmux_prefix: Some("C-a".into()),
-            key: Some("alt+o".into()),
+            key: Some("alt+0".into()),
         };
         let herdr_environment = HerdrEnvironment {
             socket_path: Some("/tmp/herdr.sock".into()),
             workspace_id: Some("w2".into()),
             tab_id: Some("w2:t4".into()),
         };
-        let hide_keys = ["M-i".into(), "M-o".into()];
+        let hide_keys = ["M-i".into(), "M-0".into()];
         let session = SessionSpec {
             name: "hs/shell/server/pane",
             scratch: &scratch,

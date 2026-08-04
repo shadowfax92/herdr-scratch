@@ -11,7 +11,7 @@ scratches:
     tmx_type: sh
     tmux_mode: workspace
     tmux_prefix: ctrl+a
-    key: alt+o
+    key: alt+0
 
 profiles:
   - name: laptop
