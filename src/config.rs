@@ -335,7 +335,7 @@ mod tests {
             full.size,
             PopupSize {
                 width: "70%".into(),
-                height: "99%".into()
+                height: "95%".into()
             }
         );
         assert_eq!(full.profile.as_deref(), Some("full-ultrawide"));
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_popup_size() {
-        let source = DEFAULT_CONFIG.replace("height: \"99%\"", "height: \"120%\"");
+        let source = DEFAULT_CONFIG.replace("height: \"95%\"", "height: \"120%\"");
 
         assert!(Config::parse(&source).is_err());
     }

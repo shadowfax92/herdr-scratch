@@ -23,7 +23,9 @@ Herdr Scratch gives every Herdr pane its own persistent Neovim scratch and full 
 
 ## Install
 
-Requires macOS, [Herdr](https://herdr.dev) 0.7.5 or newer, tmux, and a Rust toolchain. Neovim is required only for the default `nvim` scratch.
+Requires macOS or Linux (including WSL), [Herdr](https://herdr.dev) 0.7.5 or newer, tmux, and a Rust toolchain. Neovim is required only for the default `nvim` scratch.
+
+On Windows, run Herdr and this plugin inside WSL. Native Windows is not supported.
 
 ```sh
 herdr plugin install shadowfax92/herdr-scratch
@@ -73,7 +75,7 @@ herdr plugin config-dir shadowfax.scratch
 Each scratch selects a command, a key used for hiding, and optional dimensions:
 
 ```yaml
-default_popup: { width: "90%", height: "99%" }
+default_popup: { width: "90%", height: "95%" }
 
 scratches:
   nvim:
@@ -100,14 +102,14 @@ profiles:
   - name: laptop
     match: { max_client_width: 310 }
     popups:
-      nvim: { width: "95%", height: "99%" }
-      shell: { width: "95%", height: "99%" }
+      nvim: { width: "95%", height: "95%" }
+      shell: { width: "95%", height: "95%" }
 
   - name: full-ultrawide
     match: { min_client_width: 400 }
     popups:
-      nvim: { width: "70%", height: "99%" }
-      shell: { width: "80%", height: "99%" }
+      nvim: { width: "70%", height: "95%" }
+      shell: { width: "80%", height: "95%" }
 ```
 
 The configuration is loaded on every toggle, so size and command changes do not require a Herdr reload. Minimal scratches inherit Herdr's prefix. A `tmux_mode: workspace` scratch requires an explicit `tmux_prefix`, loads the normal user tmux configuration, and keeps that configuration's status, navigation, plugins, and session switching.

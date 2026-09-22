@@ -166,12 +166,12 @@ mod tests {
             source_cwd: PathBuf::from("/tmp/project"),
             tmux_prefix: "C-a".into(),
             width: "70%".into(),
-            height: "99%".into(),
+            height: "95%".into(),
         });
 
         assert!(args.windows(2).any(|pair| pair == ["--placement", "popup"]));
         assert!(args.windows(2).any(|pair| pair == ["--width", "70%"]));
-        assert!(args.windows(2).any(|pair| pair == ["--height", "99%"]));
+        assert!(args.windows(2).any(|pair| pair == ["--height", "95%"]));
         assert!(!args.iter().any(|arg| arg == "--cwd"));
         assert!(args
             .iter()

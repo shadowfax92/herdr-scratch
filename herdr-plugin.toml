@@ -3,7 +3,7 @@ name = "Herdr Scratch"
 version = "0.2.0"
 description = "Configurable per-pane persistent scratch popups backed by tmux."
 min_herdr_version = "0.7.5"
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 
 [[build]]
 command = ["cargo", "build", "--release"]
@@ -27,5 +27,5 @@ id = "scratch"
 title = "scratch"
 placement = "popup"
 width = "90%"
-height = "99%"
+height = "95%"
 command = ["./target/release/herdr-scratch", "run-popup"]

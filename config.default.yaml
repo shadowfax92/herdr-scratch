@@ -1,4 +1,4 @@
-default_popup: { width: "90%", height: "99%" }
+default_popup: { width: "90%", height: "95%" }
 
 scratches:
   nvim:
@@ -17,17 +17,17 @@ profiles:
   - name: laptop
     match: { max_client_width: 310 }
     popups:
-      nvim: { width: "95%", height: "99%" }
-      shell: { width: "95%", height: "99%" }
+      nvim: { width: "95%", height: "95%" }
+      shell: { width: "95%", height: "95%" }
 
   - name: 2-3-ultrawide
     match: { max_client_width: 350 }
     popups:
-      nvim: { width: "90%", height: "99%" }
-      shell: { width: "90%", height: "99%" }
+      nvim: { width: "90%", height: "95%" }
+      shell: { width: "90%", height: "95%" }
 
   - name: full-ultrawide
     match: { min_client_width: 400 }
     popups:
-      nvim: { width: "70%", height: "99%" }
-      shell: { width: "80%", height: "99%" }
+      nvim: { width: "70%", height: "95%" }
+      shell: { width: "80%", height: "95%" }
