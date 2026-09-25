@@ -12,14 +12,14 @@
 
 </div>
 
-Herdr Scratch gives every Herdr pane its own persistent Neovim scratch and full tmux shell workspace. Hide a popup and open it again later: the processes, windows, panes, and terminal contents are still there.
+Herdr Scratch gives every Herdr pane two persistent tmux workspaces: one starts in Neovim, the other in your shell. Both support multiple editors, shells, windows, and split panes. Hide a popup and open it again later: the processes, windows, panes, and terminal contents are still there.
 
 - **Native popups** — Herdr owns placement, focus, dimensions, and backdrop rendering.
 - **Stateful toggles** — private tmux servers keep each scratch alive while hidden.
 - **Per-pane identities** — Neovim scratches and shell workspaces never collide across source panes.
 - **Responsive profiles** — popup dimensions can follow the active Herdr client width.
-- **Project-aware cwd** — moving the source pane to another directory recreates its scratches there.
-- **Familiar controls** — Neovim mirrors Herdr's prefix; the shell loads your full tmux configuration under a separate prefix.
+- **Project-aware cwd** — new workspaces start in the source pane's directory; existing workspaces survive directory changes.
+- **Familiar controls** — both workspaces load your full tmux configuration with a configurable prefix.
 
 ## Install
 
@@ -57,12 +57,12 @@ herdr server reload-config
 
 | Key | Result |
 | --- | --- |
-| `Alt-i` | Toggle this pane's persistent Neovim |
+| `Alt-i` | Toggle this pane's full tmux workspace, starting in Neovim |
 | `Alt-0` | Toggle this pane's full tmux shell workspace |
 | any configured scratch key | Hide the currently open scratch popup |
 | `prefix prefix` | Send the prefix through to the program inside |
 
-The minimal Neovim scratch inherits Herdr's prefix. The shell workspace uses its configured `tmux_prefix` and otherwise retains your normal tmux bindings. With the default configuration, `Ctrl-a` controls tmux while the popup is focused and returns to Herdr when the popup is hidden.
+Both workspaces use their configured `tmux_prefix` and otherwise retain your normal tmux bindings. With the default configuration, `Ctrl-a` controls tmux while the popup is focused and returns to Herdr when the popup is hidden. Standard tmux bindings include `prefix c` for a new shell window, `prefix %` for a split to the right, and `prefix "` for a split below. Run `nvim` in any shell to open another editor; your tmux configuration can customize these bindings.
 
 ## Configuration
 
@@ -81,6 +81,8 @@ scratches:
   nvim:
     command: ["nvim"]
     tmx_type: vim
+    tmux_mode: workspace
+    tmux_prefix: ctrl+a
     key: alt+i
 
   shell:
@@ -116,9 +118,13 @@ The configuration is loaded on every toggle, so size and command changes do not 
 
 ## Full tmux workspace
 
-The shell workspace runs on its own named tmux server, separate from both the normal tmux server and the minimal Neovim scratch server. Your normal tmux configuration is loaded without copying it. Scratch overlays only the workspace prefix and configured popup-hide keys.
+The Neovim and shell workspaces have separate sessions on a private named tmux server, separate from the normal tmux server and any minimal scratches. Your normal tmux configuration is loaded without copying it. Scratch overlays only the workspace prefix and configured popup-hide keys. Workspace scratches share the server's prefix and key tables, so configure the same `tmux_prefix` for them.
 
-Pressing `Alt-0` inside the popup detaches its tmux client. The popup command then exits, so Herdr closes the popup while the workspace server keeps every window, pane, and process alive. The next `Alt-0` from the same Herdr pane attaches to that session again. Configuration reloads reapply the Scratch overlay automatically.
+The configured command starts only the first pane: Neovim for `Alt-i`, your login shell for `Alt-0`. Additional windows and splits follow your normal tmux configuration. Closing one editor leaves the other panes running; closing the final pane ends that session.
+
+Pressing either scratch key inside the popup detaches its tmux client. The popup command then exits, so Herdr closes the popup while the workspace server keeps every window, pane, and process alive. Opening the same scratch from the same Herdr pane attaches to that session again. Configuration reloads reapply the Scratch overlay automatically.
+
+Existing installations keep their `config.yaml`. To enable the Neovim workspace, add `tmux_mode: workspace` and `tmux_prefix: ctrl+a` under `scratches.nvim`, as above. The next open uses a new workspace session. An existing minimal Neovim session stays on its original server under the normal cleanup policy; its buffers are not migrated or closed by this change. To reopen it, temporarily set `tmux_mode: minimal` with the source pane in its original directory: minimal mode recreates sessions when that directory changes.
 
 ## Add another scratch
 

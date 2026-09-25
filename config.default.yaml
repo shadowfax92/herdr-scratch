@@ -9,8 +9,11 @@ cleanup:
 
 scratches:
   nvim:
+    # Start with an editor; workspace mode keeps normal tmux windows and splits.
     command: ["nvim"]
     tmx_type: vim
+    tmux_mode: workspace
+    tmux_prefix: ctrl+a
     key: alt+i
 
   shell:

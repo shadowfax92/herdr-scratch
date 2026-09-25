@@ -406,8 +406,8 @@ mod tests {
         let config = config();
 
         let nvim = config.scratch("nvim").unwrap();
-        assert_eq!(nvim.tmux_mode, TmuxMode::Minimal);
-        assert_eq!(nvim.tmux_prefix, None);
+        assert_eq!(nvim.tmux_mode, TmuxMode::Workspace);
+        assert_eq!(nvim.tmux_prefix.as_deref(), Some("C-a"));
 
         let shell = config.scratch("shell").unwrap();
         assert_eq!(shell.tmux_mode, TmuxMode::Workspace);
