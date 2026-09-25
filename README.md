@@ -186,12 +186,27 @@ herdr-scratch cleanup-start    # ensure the background worker is running
 herdr-scratch cleanup-stop     # stop the worker without closing scratches
 ```
 
+For a manual sweep from Herdr or another plugin such as Herdr Menu, invoke:
+
+```sh
+herdr plugin action invoke shadowfax.scratch.reap
+```
+
+Herdr supplies Scratch's own state and configuration directories to this action.
+It applies the same bounded cleanup policy to both private servers and reports
+completion through a Herdr notification. The plugin log contains the full JSON
+report; cleanup errors also mark the action as failed. Disabled cleanup is
+reported without deleting anything. A large backlog may need repeated sweeps.
+The old `tmx reap` command only handles tmx's `gs/` sessions and cannot clean up
+Herdr Scratch's `hs/` sessions.
+
 Use `cleanup.enabled: false` to disable retention persistently; startup and pane-close hooks may restart a manually stopped worker. `cleanup-status.json` in the state directory records the latest sweep, and `cleanup.log` records worker errors. Tests use isolated servers only:
 
 ```sh
 cargo test --locked
 cargo test cleanup::real_tests --locked -- --ignored
 python3 tests/cleanup_real.py target/debug/herdr-scratch
+python3 tests/reap_menu_real.py ../herdr-menu/target/release/herdr-menu target/release/herdr-scratch
 ```
 
 Scratch sessions expose these compatibility variables:

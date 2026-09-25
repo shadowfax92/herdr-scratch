@@ -74,6 +74,17 @@ impl Herdr {
         self.run(args).map(|_| ())
     }
 
+    pub fn show_notification(&self, body: &str) -> Result<()> {
+        self.run(vec![
+            "notification".into(),
+            "show".into(),
+            "Herdr Scratch".into(),
+            "--body".into(),
+            body.chars().take(220).collect(),
+        ])
+        .map(|_| ())
+    }
+
     pub fn current_pane(&self) -> Result<SourcePane> {
         let output = self.run(vec!["pane".into(), "current".into()])?;
         let response: CurrentPaneResponse =

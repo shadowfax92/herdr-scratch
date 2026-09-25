@@ -110,7 +110,7 @@ mod tests {
     use toml_edit::DocumentMut;
 
     #[test]
-    fn manifest_exposes_only_nvim_and_shell_toggles() {
+    fn manifest_exposes_toggles_and_owned_reaping() {
         let manifest = include_str!("../herdr-plugin.toml")
             .parse::<DocumentMut>()
             .unwrap();
@@ -120,6 +120,14 @@ mod tests {
             .map(|action| action["id"].as_str().unwrap())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, ["toggle-nvim", "toggle-shell"]);
+        assert_eq!(ids, ["toggle-nvim", "toggle-shell", "reap"]);
+        let reap = actions.get(2).unwrap();
+        let command = reap["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(command, ["./target/release/herdr-scratch", "reap"]);
     }
 }

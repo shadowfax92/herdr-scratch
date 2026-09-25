@@ -22,6 +22,14 @@ description = "Open or hide the persistent shell popup for the focused pane."
 contexts = ["pane"]
 command = ["./target/release/herdr-scratch", "toggle", "--scratch", "shell"]
 
+# Cross-plugin callers use this action so Herdr supplies Scratch's state/config
+# directories, rather than inheriting the caller plugin's private directories.
+[[actions]]
+id = "reap"
+title = "Reap stale scratch sessions"
+description = "Reclaim closed-source or expired scratches on both private tmux servers and report the result."
+command = ["./target/release/herdr-scratch", "reap"]
+
 [[panes]]
 id = "scratch"
 title = "scratch"

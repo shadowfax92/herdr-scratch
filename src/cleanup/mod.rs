@@ -1,5 +1,6 @@
 //! Background reclamation for Scratch's private tmux servers. Popup commands
 //! never call the scanner; lifecycle hooks own its separate worker process.
+//! Explicit reaping shares the same policy, sweep lock, and identity checks.
 
 mod backend;
 mod policy;
@@ -148,6 +149,56 @@ pub fn worker() -> Result<()> {
 }
 
 pub fn inspect(apply: bool) -> Result<()> {
+    let report = inspect_report(apply)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+/// Herdr dispatches plugin actions asynchronously, so a menu's successful
+/// invocation only means the child started. Report completion from that child,
+/// after the shared sweep finishes, including disabled policy and failures.
+pub fn reap() -> Result<()> {
+    let result = inspect_report(true);
+    let message = match &result {
+        Ok(report) => report.summary(),
+        Err(error) => format!("Could not reap scratch sessions: {error:#}"),
+    };
+    if let Err(error) = crate::herdr::Herdr::from_env().show_notification(&message) {
+        // Notification failure cannot undo removals or turn a completed sweep
+        // into a retryable failure; the full result remains in the plugin log.
+        eprintln!("reap notification: {error:#}");
+    }
+    let report = result?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !report.errors.is_empty() {
+        bail!("scratch reaping completed with errors; see the report above");
+    }
+    Ok(())
+}
+
+impl Report {
+    fn summary(&self) -> String {
+        if !self.enabled {
+            return "Scratch cleanup is disabled in config.yaml; no sessions removed.".into();
+        }
+        let mut message = format!(
+            "Reaped {} scratch sessions (checked {}/{}).",
+            self.removed, self.scanned, self.owned_sessions
+        );
+        if self.scanned < self.owned_sessions {
+            message.push_str(" Run again to continue.");
+        }
+        if !self.errors.is_empty() {
+            message.push_str(&format!(
+                " {} cleanup errors; see the Scratch plugin log.",
+                self.errors.len()
+            ));
+        }
+        message
+    }
+}
+
+fn inspect_report(apply: bool) -> Result<Report> {
     let root = state_dir()?;
     let _lock = if apply {
         Some(
@@ -157,9 +208,7 @@ pub fn inspect(apply: bool) -> Result<()> {
     } else {
         None
     };
-    let report = sweep(&root, LoadedConfig::load()?.cleanup(), apply, false, now()?)?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    Ok(())
+    sweep(&root, LoadedConfig::load()?.cleanup(), apply, false, now()?)
 }
 
 fn now() -> Result<u64> {
