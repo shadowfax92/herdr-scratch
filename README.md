@@ -150,7 +150,43 @@ Then bind `shadowfax.scratch.toggle-lazygit` in Herdr and re-link the local chec
 
 ## How persistence works
 
-Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server under the plugin state directory owns the long-running process. Minimal and workspace scratches use separate servers so their prefix, status, and key behavior remain independent. The popup client detaches when hidden and reattaches on the next toggle; persistence ends if its private tmux server exits.
+Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server under the plugin state directory owns the long-running process. Minimal and workspace scratches use separate servers so their prefix, status, and key behavior remain independent. The popup client detaches when hidden and reattaches on the next toggle. The background retention policy below limits how long hidden sessions remain alive.
+
+### Background cleanup
+
+Scratch removes sessions whose source terminal has closed. It also removes hidden sessions unused for **24 hours** by default, including any editors, agents, or background jobs still running inside them. Attached popups never expire by TTL. A workspace move preserves the source terminal identity and does not trigger cleanup.
+
+Configure retention in the existing `config.yaml`:
+
+```yaml
+cleanup:
+  enabled: true
+  ttl_hours: 24
+  interval_seconds: 60
+```
+
+Last use includes attachment and keyboard/mouse activity. The worker also renews the timestamp while a client is attached; background program output alone does not renew it. Legacy configurations inherit these defaults. Invalid cleanup settings suspend deletion rather than falling back to defaults.
+
+Herdr's startup hook launches a separate worker process. Every sweep reloads configuration, snapshots the two private tmux servers and relevant Herdr servers, and reclaims at most 16 sessions with a two-second work budget between operations. In-flight requests are separately bounded to 500 ms. A large backlog is reclaimed over several sweeps. Neither popup toggle nor creation scans sessions or waits for this worker.
+
+Only sessions matching Scratch's naming and ownership metadata are eligible. The worker resolves old pane aliases and remembers stable terminal IDs. A failed Herdr connection does not imply closure; the independent TTL still applies. Immediately before removing a session it rechecks tmux identity and, for TTL, attachment/activity, so a newly reopened scratch is preserved.
+
+For manual inspection, set `HERDR_PLUGIN_STATE_DIR` and `HERDR_PLUGIN_CONFIG_DIR` to this plugin's directories (Herdr supplies both to plugin commands), then run:
+
+```sh
+herdr-scratch cleanup          # read-only preview of one bounded sweep
+herdr-scratch cleanup --apply  # perform one bounded sweep
+herdr-scratch cleanup-start    # ensure the background worker is running
+herdr-scratch cleanup-stop     # stop the worker without closing scratches
+```
+
+Use `cleanup.enabled: false` to disable retention persistently; startup and pane-close hooks may restart a manually stopped worker. `cleanup-status.json` in the state directory records the latest sweep, and `cleanup.log` records worker errors. Tests use isolated servers only:
+
+```sh
+cargo test --locked
+cargo test cleanup::real_tests --locked -- --ignored
+python3 tests/cleanup_real.py target/debug/herdr-scratch
+```
 
 Scratch sessions expose these compatibility variables:
 

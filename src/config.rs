@@ -16,10 +16,32 @@ pub struct LoadedConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    cleanup: CleanupConfig,
     default_popup: PopupSize,
     scratches: BTreeMap<String, ScratchDefinition>,
     #[serde(default)]
     profiles: Vec<Profile>,
+}
+
+/// Retention is read by the background worker on each sweep. Old user configs
+/// inherit the policy without rewriting popup definitions or keybindings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CleanupConfig {
+    pub enabled: bool,
+    pub ttl_hours: u64,
+    pub interval_seconds: u64,
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_hours: 24,
+            interval_seconds: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +111,9 @@ pub struct ResolvedPopup {
 }
 
 impl LoadedConfig {
+    pub fn cleanup(&self) -> &CleanupConfig {
+        &self.config.cleanup
+    }
     pub fn load() -> Result<Self> {
         let path = config_path();
         let source = match fs::read_to_string(&path) {
@@ -139,6 +164,12 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
+        if self.cleanup.ttl_hours == 0 || self.cleanup.ttl_hours.checked_mul(3600).is_none() {
+            bail!("cleanup.ttl_hours must be positive and fit in seconds");
+        }
+        if !(5..=86400).contains(&self.cleanup.interval_seconds) {
+            bail!("cleanup.interval_seconds must be between 5 and 86400");
+        }
         validate_popup(&self.default_popup)?;
         if self.scratches.is_empty() {
             bail!("at least one scratch definition is required");
@@ -321,6 +352,25 @@ mod tests {
 
     fn config() -> Config {
         Config::parse(DEFAULT_CONFIG).unwrap()
+    }
+
+    #[test]
+    fn existing_configs_get_one_day_retention_and_invalid_policy_is_rejected() {
+        let old =
+            "default_popup: {width: '90%', height: '95%'}\nscratches:\n  shell: {shell: true}\n";
+        let config = Config::parse(old).unwrap();
+        assert!(config.cleanup.enabled);
+        assert_eq!(config.cleanup.ttl_hours, 24);
+        assert_eq!(config.cleanup.interval_seconds, 60);
+        assert!(Config::parse(&format!("{old}cleanup: {{ttl_hours: 0}}\n")).is_err());
+        assert!(Config::parse(&format!("{old}cleanup: {{interval_seconds: 0}}\n")).is_err());
+        assert_eq!(
+            Config::parse(&format!("{old}cleanup: {{ttl_hours: 48}}\n"))
+                .unwrap()
+                .cleanup
+                .ttl_hours,
+            48
+        );
     }
 
     #[test]

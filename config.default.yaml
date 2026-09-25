@@ -1,5 +1,12 @@
 default_popup: { width: "90%", height: "95%" }
 
+# A separate worker reclaims closed-source scratches and hidden sessions unused
+# for this long. Expiration terminates every job in the selected scratch.
+cleanup:
+  enabled: true
+  ttl_hours: 24
+  interval_seconds: 60
+
 scratches:
   nvim:
     command: ["nvim"]

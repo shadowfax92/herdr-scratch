@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{bail, Context, Result};
@@ -13,6 +13,14 @@ const MINIMAL_SERVER_NAME: &str = "shadowfax-herdr-scratch";
 const WORKSPACE_SERVER_NAME: &str = "shadowfax-herdr-workspace";
 const WORKSPACE_HOOK_INDEX: u16 = 999;
 const ENV_VERSION: &str = "1";
+
+/// Discovery and creation share this namespace. tmux appends the effective
+/// user's directory to TMUX_TMPDIR when selecting a named (-L) server.
+pub(crate) fn server_socket_paths(state_dir: &Path) -> [PathBuf; 2] {
+    // SAFETY: geteuid has no pointers or side effects.
+    let directory = state_dir.join(format!("tmux-{}", unsafe { libc::geteuid() }));
+    [MINIMAL_SERVER_NAME, WORKSPACE_SERVER_NAME].map(|name| directory.join(name))
+}
 
 pub struct HerdrEnvironment {
     socket_path: Option<String>,
@@ -409,7 +417,7 @@ fn flatten_commands(commands: Vec<Vec<String>>) -> Vec<String> {
     args
 }
 
-fn session_name(scratch_name: &str, pane_id: &str, server_identity: &str) -> String {
+pub(crate) fn session_name(scratch_name: &str, pane_id: &str, server_identity: &str) -> String {
     format!(
         "hs/{}/{}/{}",
         scratch_name,

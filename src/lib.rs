@@ -1,3 +1,4 @@
+pub mod cleanup;
 mod config;
 mod context;
 mod herdr;
@@ -75,6 +76,16 @@ pub fn show_config() -> Result<()> {
         .ok();
 
     println!("config: {}", config.path.display());
+    println!(
+        "cleanup: {} ({} hours since last use, {} second interval)",
+        if config.cleanup().enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.cleanup().ttl_hours,
+        config.cleanup().interval_seconds
+    );
     println!(
         "client_width: {}",
         client_width

@@ -29,3 +29,12 @@ placement = "popup"
 width = "90%"
 height = "95%"
 command = ["./target/release/herdr-scratch", "run-popup"]
+
+# The resident worker owns scans and retention; popup processes never wait for
+# it. The event hook only ensures liveness after a crash, without doing a scan.
+[[startup]]
+command = ["./target/release/herdr-scratch", "cleanup-start"]
+
+[[events]]
+on = "pane.closed"
+command = ["./target/release/herdr-scratch", "cleanup-start"]

@@ -16,6 +16,17 @@ enum Command {
     },
     RunPopup,
     Config,
+    /// Preview reclaimable sessions; --apply performs one bounded sweep.
+    Cleanup {
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Ensure the independent background cleanup worker is running.
+    CleanupStart,
+    /// Ask the worker to stop; existing scratches remain intact.
+    CleanupStop,
+    #[command(hide = true)]
+    CleanupWorker,
 }
 
 fn main() {
@@ -30,5 +41,9 @@ fn run() -> Result<()> {
         Command::Toggle { scratch } => herdr_scratch::toggle(&scratch),
         Command::RunPopup => herdr_scratch::run_popup(),
         Command::Config => herdr_scratch::show_config(),
+        Command::Cleanup { apply } => herdr_scratch::cleanup::inspect(apply),
+        Command::CleanupStart => herdr_scratch::cleanup::start(),
+        Command::CleanupStop => herdr_scratch::cleanup::stop(),
+        Command::CleanupWorker => herdr_scratch::cleanup::worker(),
     }
 }
