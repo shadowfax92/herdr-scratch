@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::config::{ResolvedScratch, TmuxMode};
+use crate::context::{context_path, sanitize, ScratchContext};
 
 const MINIMAL_SERVER_NAME: &str = "shadowfax-herdr-scratch";
 const WORKSPACE_SERVER_NAME: &str = "shadowfax-herdr-workspace";
@@ -47,6 +48,7 @@ struct SessionSpec<'a> {
     scratch: &'a ResolvedScratch,
     pane_id: &'a str,
     cwd: &'a Path,
+    context_path: &'a Path,
     prefix: &'a str,
     hide_keys: &'a [String],
     herdr_environment: &'a HerdrEnvironment,
@@ -59,8 +61,7 @@ struct TmuxServer<'a> {
 
 pub fn run(
     scratch: &ResolvedScratch,
-    pane_id: &str,
-    cwd: &Path,
+    context: &ScratchContext,
     herdr_environment: &HerdrEnvironment,
     state_dir: &Path,
     prefix: &str,
@@ -72,12 +73,21 @@ pub fn run(
         mode: scratch.tmux_mode,
     };
 
-    let name = session_name(&scratch.name, pane_id, herdr_environment.server_identity());
+    let name = session_name(
+        &scratch.name,
+        &context.source_pane,
+        herdr_environment.server_identity(),
+    );
+    let context_path = context_path(state_dir, &name);
+    // Publish before launching the first editor so VimEnter can record this
+    // root without cd-ing. Existing editors observe the same atomic handoff.
+    context.publish(&context_path)?;
     let session = SessionSpec {
         name: &name,
         scratch,
-        pane_id,
-        cwd,
+        pane_id: &context.source_pane,
+        cwd: &context.root,
+        context_path: &context_path,
         prefix,
         hide_keys,
         herdr_environment,
@@ -92,7 +102,9 @@ pub fn run(
     server.update_session_environment(&session)?;
 
     let mut command = server.command();
-    command.args(["attach-session", "-t", &exact_target(&name)]);
+    // tmux's session cwd controls future windows/splits, never existing shells.
+    command.args(["attach-session", "-t", &exact_target(&name), "-c"]);
+    command.arg(&context.root);
     let _status = command
         .status()
         .context("failed to attach tmux scratch session")?;
@@ -336,6 +348,10 @@ fn session_environment(session: &SessionSpec<'_>) -> Vec<(String, String)> {
             session.cwd.to_string_lossy().into_owned(),
         ),
         ("HERDR_SCRATCH_SOURCE_PANE".into(), session.pane_id.into()),
+        (
+            "HERDR_SCRATCH_CONTEXT".into(),
+            session.context_path.to_string_lossy().into_owned(),
+        ),
         ("TMX_PARENT_PANE".into(), session.pane_id.into()),
         ("TMX_SCRATCH".into(), "1".into()),
         ("TMX_SCRATCH_TYPE".into(), session.scratch.tmx_type.clone()),
@@ -433,25 +449,6 @@ fn short_hash(value: &str) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
-}
-
-fn sanitize(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    let trimmed = sanitized.trim_matches('-');
-    if trimmed.is_empty() {
-        "pane".into()
-    } else {
-        trimmed.into()
-    }
 }
 
 fn exact_target(name: &str) -> String {
@@ -565,6 +562,7 @@ mod tests {
             scratch: &scratch,
             pane_id: "pane",
             cwd: Path::new("/tmp/project"),
+            context_path: Path::new("/tmp/state/context/session.json"),
             prefix: "C-a",
             hide_keys: &hide_keys,
             herdr_environment: &herdr_environment,

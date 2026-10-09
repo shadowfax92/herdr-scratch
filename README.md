@@ -64,7 +64,17 @@ herdr server reload-config
 
 Both workspaces use their configured `tmux_prefix` and otherwise retain your normal tmux bindings. With the default configuration, `Ctrl-a` controls tmux while the popup is focused and returns to Herdr when the popup is hidden. Standard tmux bindings include `prefix c` for a new shell window, `prefix %` for a split to the right, and `prefix "` for a split below. Run `nvim` in any shell to open another editor; your tmux configuration can customize these bindings.
 
+Every open follows the parent pane's `grove_worktree` token when it names an existing directory, falling back to the pane cwd. New windows in either scratch start there; running shells keep their cwd. Install the companion below so existing Neovim editors follow root changes too. A manual `:cd` sticks until the published root changes.
+
 ## Configuration
+
+For lazy.nvim, load the companion from your local Scratch checkout:
+
+```lua
+{ dir = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/nvim", name = "herdr-scratch.nvim", lazy = false, cond = vim.env.HERDR_SCRATCH_SOURCE_PANE ~= nil }
+```
+
+It runs only inside scratches and watches the atomic `HERDR_SCRATCH_CONTEXT` publication. Every update emits `User HerdrScratchContext` with `{ root, source_pane, changed }` for consumers such as Sidekick; tmux focus events are unnecessary.
 
 The first toggle creates `config.yaml` from [config.default.yaml](config.default.yaml). Find its directory with:
 

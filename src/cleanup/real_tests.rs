@@ -51,10 +51,14 @@ impl Fixture {
     }
 
     fn command(&self) -> Command {
+        Self::command_at(&self.socket)
+    }
+
+    fn command_at(socket: &Path) -> Command {
         let mut command = Command::new("tmux");
         command
             .arg("-S")
-            .arg(&self.socket)
+            .arg(socket)
             .args(["-f", "/dev/null"])
             .env_remove("TMUX");
         command
@@ -92,9 +96,71 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.command().arg("kill-server").output();
+        for socket in crate::tmux::server_socket_paths(&self.root) {
+            let _ = Self::command_at(&socket).arg("kill-server").output();
+        }
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn reaping_one_mode_preserves_context_for_the_other_mode() {
+    let fixture = Fixture::new();
+    let [_, workspace] = crate::tmux::server_socket_paths(&fixture.root);
+    let source = fixture.root.join("missing-herdr.sock");
+    let output = Fixture::command_at(&workspace)
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            "foreign",
+            "sleep 300",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            &fixture.name,
+            "sleep 300",
+            ";",
+            "set-option",
+            "-t",
+            &fixture.name,
+            "@herdr_source_pane",
+            "w1:p1",
+            ";",
+            "set-option",
+            "-t",
+            &fixture.name,
+            "@herdr_env_version",
+            "1",
+            ";",
+            "set-environment",
+            "-t",
+            &fixture.name,
+            "HERDR_SOCKET_PATH",
+            source.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let context = crate::context::context_path(&fixture.root, &fixture.name);
+    fs::create_dir_all(context.parent().unwrap()).unwrap();
+    fs::write(&context, b"{\"version\":1}").unwrap();
+    let mut client = fixture.attach();
+    let now = now().unwrap();
+    let policy = CleanupConfig::default();
+    let first = sweep(&fixture.root, &policy, true, false, now + 86400).unwrap();
+    // Reap the hidden workspace, while the same-name minimal session remains
+    // attached. Both modes intentionally share C2's filename contract.
+    let preserved = context.exists();
+    client.kill().unwrap();
+    client.wait().unwrap();
+    assert_eq!(first.removed, 1, "{:?}", first.errors);
+    assert!(preserved, "removed the still-owned shared context");
+    let second = sweep(&fixture.root, &policy, true, false, now + 172800).unwrap();
+    assert_eq!(second.removed, 1, "{:?}", second.errors);
+    assert!(!context.exists(), "last owner must remove its context");
 }
 
 #[test]

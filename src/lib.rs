@@ -41,9 +41,7 @@ pub fn run_popup() -> Result<()> {
         std::env::var("HERDR_SCRATCH_NAME").context("HERDR_SCRATCH_NAME is missing")?;
     let source_pane_id = std::env::var("HERDR_SCRATCH_SOURCE_PANE")
         .context("HERDR_SCRATCH_SOURCE_PANE is missing")?;
-    let source_cwd = std::env::var_os("HERDR_SCRATCH_SOURCE_CWD")
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
+    let context = Herdr::from_env().scratch_context(&source_pane_id)?;
     let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
         .map(PathBuf::from)
         .context("HERDR_PLUGIN_STATE_DIR is missing")?;
@@ -58,8 +56,7 @@ pub fn run_popup() -> Result<()> {
 
     tmux::run(
         &scratch,
-        &source_pane_id,
-        &source_cwd,
+        &context,
         &herdr_environment,
         &state_dir,
         &tmux_prefix,
