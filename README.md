@@ -64,7 +64,7 @@ herdr server reload-config
 
 Both workspaces use their configured `tmux_prefix` and otherwise retain your normal tmux bindings. With the default configuration, `Ctrl-a` controls tmux while the popup is focused and returns to Herdr when the popup is hidden. Standard tmux bindings include `prefix c` for a new shell window, `prefix %` for a split to the right, and `prefix "` for a split below. Run `nvim` in any shell to open another editor; your tmux configuration can customize these bindings.
 
-Every open follows the parent pane's `grove_worktree` token when it names an existing directory, falling back to the pane cwd. New windows in either scratch start there; running shells keep their cwd. Install the companion below so existing Neovim editors follow root changes too. A manual `:cd` sticks until the published root changes.
+Every open follows the parent pane's `grove_worktree` token: a 64-hex handle resolves through `${XDG_STATE_HOME:-$HOME/.local/state}/grove/worktrees/<hex>`, where Grove stores the absolute worktree root. Existing legacy absolute-directory tokens also work. Missing or invalid handles and directories fall back to the pane cwd. New windows in either scratch start there; running shells keep their cwd. Install the companion below so existing Neovim editors follow root changes too. A manual `:cd` sticks until the published root changes.
 
 ## Configuration
 

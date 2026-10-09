@@ -40,9 +40,7 @@ struct PublishedContext<'a> {
 
 impl ScratchContext {
     pub fn resolve(source_pane: String, cwd: PathBuf, grove_worktree: Option<String>) -> Self {
-        let worktree = grove_worktree
-            .map(PathBuf::from)
-            .filter(|path| path.is_dir());
+        let worktree = grove_worktree.as_deref().and_then(grove_worktree_root);
         let (root, root_source) = match worktree {
             Some(path) => (path, RootSource::Grove),
             None => (cwd, RootSource::Cwd),
@@ -89,6 +87,31 @@ impl ScratchContext {
         }
         publication.with_context(|| format!("failed to publish {}", path.display()))
     }
+}
+
+/// Grove owns the immutable handle files; Scratch only reads them. A 64-character
+/// hex token fits Herdr's limit while the file carries an arbitrary-length
+/// root. Failed lookups stay optional so pane cwd remains a usable fallback.
+fn grove_worktree_root(token: &str) -> Option<PathBuf> {
+    let root = if token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        let state_dir = std::env::var_os("XDG_STATE_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|home| !home.is_empty())
+                    .map(|home| PathBuf::from(home).join(".local/state"))
+            })?;
+        let contents = fs::read_to_string(state_dir.join("grove/worktrees").join(token)).ok()?;
+        // Remove only the producer's optional trailing LF. Trimming whitespace
+        // would silently alter valid directory names; relative content is invalid.
+        PathBuf::from(contents.strip_suffix('\n').unwrap_or(&contents))
+    } else if token.starts_with('/') {
+        PathBuf::from(token)
+    } else {
+        return None;
+    };
+    (root.is_absolute() && root.is_dir()).then_some(root)
 }
 
 /// Creation and reaping must agree on the filename, including slash-heavy
