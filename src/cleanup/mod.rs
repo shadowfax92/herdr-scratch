@@ -310,6 +310,24 @@ fn sweep(
                 }
             }
         }
+        if removed {
+            // A minimal/workspace migration can leave two same-name sessions
+            // sharing this publication. Never remove the surviving mode's file.
+            match backend::context_in_use(root, &session.name) {
+                Ok(false) => {
+                    let path = crate::context::context_path(root, &session.name);
+                    if let Err(error) = fs::remove_file(&path) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            report.errors.push(format!("{}: {error}", path.display()));
+                        }
+                    }
+                }
+                Ok(true) => {}
+                Err(error) => report
+                    .errors
+                    .push(format!("{} context ownership: {error:#}", session.name)),
+            }
+        }
         report.removed += usize::from(removed);
         report.candidates.push(Candidate {
             session: session.name.clone(),

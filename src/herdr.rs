@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -5,7 +6,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::context::SourcePane;
+use crate::context::{ScratchContext, SourcePane};
 
 const PLUGIN_ID: &str = "shadowfax.scratch";
 const POPUP_ENTRYPOINT: &str = "scratch";
@@ -35,6 +36,8 @@ struct PaneInfo {
     pane_id: String,
     cwd: Option<String>,
     foreground_cwd: Option<String>,
+    #[serde(default)]
+    tokens: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +102,26 @@ impl Herdr {
             pane_id: pane.pane_id,
             cwd,
         })
+    }
+
+    pub fn scratch_context(&self, pane_id: &str) -> Result<ScratchContext> {
+        // Resolve at run-popup, not toggle: agent metadata can change while
+        // Herdr is creating the popup. One read keeps cwd and token consistent.
+        let output = self.run(vec!["pane".into(), "get".into(), pane_id.into()])?;
+        let response: CurrentPaneResponse =
+            serde_json::from_str(&output).context("failed to parse `herdr pane get`")?;
+        let mut pane = response.result.pane;
+        let cwd = pane
+            .foreground_cwd
+            .or(pane.cwd)
+            .filter(|cwd| !cwd.is_empty())
+            .map(PathBuf::from)
+            .context("source pane has no cwd")?;
+        Ok(ScratchContext::resolve(
+            pane_id.to_owned(),
+            cwd,
+            pane.tokens.remove("grove_worktree"),
+        ))
     }
 
     pub fn client_width(&self, pane_id: &str) -> Result<u16> {

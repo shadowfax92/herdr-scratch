@@ -257,6 +257,23 @@ pub(super) fn remove(session: &Session, reason: Reason) -> Result<bool> {
     }
 }
 
+/// Mode migrations can leave the same session name in both private servers.
+/// The fixed context filename is shared, so only the last owner may remove it.
+/// Query names without ownership filtering to also protect a recreating session
+/// whose environment/metadata has not been installed yet; errors retain context.
+pub(super) fn context_in_use(state_dir: &Path, session_name: &str) -> Result<bool> {
+    for socket in crate::tmux::server_socket_paths(state_dir) {
+        if !socket.exists() {
+            continue;
+        }
+        let names = tmux(&socket, &["list-sessions", "-F", "#{session_name}"])?;
+        if names.lines().any(|name| name == session_name) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn tmux(socket: &Path, args: &[&str]) -> Result<String> {
     bounded_output(
         Command::new("tmux")
