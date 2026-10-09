@@ -2,7 +2,8 @@
 
 Usage: python3 tests/context_real.py target/release/herdr-scratch <worktree-a> <worktree-b>
 Creates one unfocused tab in the default session's ft workspace. All tmux
-servers, configs and RPC sockets are temporary; only that test pane is closed.
+servers, Grove handle files, configs and RPC sockets are temporary; only that
+test pane is closed. Use a >80-character worktree-a to exercise C1 v2.
 """
 
 import hashlib
@@ -39,16 +40,25 @@ def main():
     binary = str(Path(sys.argv[1]).resolve())
     roots = [str(Path(arg).resolve()) for arg in sys.argv[2:4]]
     assert len(roots) == 2 and roots[0] != roots[1]
-    assert all(Path(root).is_dir() and len(root) <= 80 for root in roots)
+    assert all(Path(root).is_dir() for root in roots)
+    assert len(roots[0]) > 80, "first worktree must exceed Herdr's token limit"
     repo = Path(__file__).resolve().parents[1]
     cli = lambda *args: run("herdr", "--session", "default", *args)
     workspace = next(w["workspace_id"] for w in json.loads(cli("workspace", "list"))["result"]["workspaces"] if w["label"] == "ft")
-    pane = json.loads(cli("tab", "create", "--workspace", workspace, "--cwd", str(repo), "--label", "scratch-context-test", "--no-focus"))["result"]["root_pane"]["pane_id"]
+    pane = json.loads(cli("tab", "create", "--workspace", workspace, "--cwd", roots[1], "--label", "scratch-context-test", "--no-focus"))["result"]["root_pane"]["pane_id"]
     pane_open = True
     try:
         with tempfile.TemporaryDirectory(prefix="hs-ctx-", dir="/tmp") as temporary:
             root = Path(temporary)
             state, config = root / "s", root / "c"
+            xdg_state = root / "xdg-state"
+            handle_store = xdg_state / "grove" / "worktrees"
+            handle_store.mkdir(parents=True)
+            handles = [hashlib.sha256(path.encode()).hexdigest() for path in roots]
+            # Simulate only Grove's durable wire contract, never its production
+            # state. The first publication includes the optional trailing LF.
+            for i, handle in enumerate(handles):
+                handle_store.joinpath(handle).write_text(roots[i] + ("\n" if i == 0 else ""))
             state.mkdir()
             config.mkdir()
             sockets = state / f"tmux-{os.geteuid()}"
@@ -79,6 +89,7 @@ def main():
             )
             env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_PLUGIN_") and k not in ("TMUX", "TMUX_PANE", "HERDR_SCRATCH_CONTEXT")}
             env.update(HERDR_PLUGIN_STATE_DIR=str(state), HERDR_PLUGIN_CONFIG_DIR=str(config),
+                       XDG_STATE_HOME=str(xdg_state),
                        HERDR_SCRATCH_SOURCE_PANE=pane, HERDR_SCRATCH_SOURCE_CWD="/wrong/snapshot",
                        HERDR_SCRATCH_NAME="nvim", HERDR_SCRATCH_PREFIX="C-a", TERM="xterm-256color", SHELL="/bin/sh",
                        HERDR_BIN_PATH=str(herdr_wrapper), HERDR_TEST_BIN=shutil.which("herdr"), HERDR_TEST_CALLS=str(herdr_calls))
@@ -130,7 +141,8 @@ def main():
                 # Prestart private servers without loading the owner's tmux config.
                 for socket in (outer, workspace_socket, minimal_socket):
                     tmux(socket, "new-session", "-d", "-s", "fixture", "sleep 300")
-                set_token(roots[0])
+                set_token(handles[0])
+                assert json.loads(cli("pane", "get", pane))["result"]["pane"]["tokens"]["grove_worktree"] == handles[0]
                 show("nvim")
                 wait_for(lambda: rpc.exists(), "Neovim RPC socket")
                 result = observed()
@@ -142,13 +154,19 @@ def main():
                 assert tmux(workspace_socket, "show-environment", "-t", "=" + name("nvim"), "HERDR_SCRATCH_CONTEXT") == "HERDR_SCRATCH_CONTEXT=" + str(context("nvim"))
                 assert tmux(workspace_socket, "show-options", "-v", "focus-events") == "off"
                 hide("nvim")
-                print("OBSERVED: " + json.dumps({"context": data, "nvim": result}), flush=True)
-                print("PASS: new Neovim starts at grove worktree; v1 context and session environment published; focus-events off", flush=True)
+                print("OBSERVED: " + json.dumps({"token": handles[0], "root_length": len(roots[0]), "context": data, "nvim": result}), flush=True)
+                print("PASS: 64-hex handle roots new Neovim at a >80-character worktree; trailing LF ignored; focus-events off", flush=True)
 
-                set_token(roots[1])
+                set_token(handles[1])
                 result = reopen(roots[1], "grove", True)
                 assert result["cwd"] == roots[1]
                 print("OBSERVED: " + json.dumps({"nvim_pid": result["pid"], "cwd": result["cwd"], "event": result["events"][-1]}), flush=True)
+                set_token(handles[0])
+                result = reopen(roots[0], "grove", True)
+                assert result["cwd"] == roots[0]
+                print("OBSERVED: " + json.dumps({"nvim_pid": result["pid"], "cwd": result["cwd"], "event": result["events"][-1]}), flush=True)
+                set_token(handles[1])
+                assert reopen(roots[1], "grove", True)["cwd"] == roots[1]
                 # New windows consume attach-session's root for both scratches.
                 show("shell")
                 hide("shell")
@@ -156,12 +174,12 @@ def main():
                     show(kind)
                     new_window_root(kind, roots[1])
                     hide(kind)
-                set_token(roots[0])
+                set_token(handles[0])
                 show("shell")
                 assert tmux(workspace_socket, "display-message", "-p", "-t", "=" + name("shell") + ":", "#{pane_current_path}") == roots[1]
                 new_window_root("shell", roots[0])
                 hide("shell")
-                set_token(roots[1])
+                set_token(handles[1])
                 print("PASS: reopen changes cwd in the same Neovim; changed=true event; new windows in both scratches use root", flush=True)
 
                 rpc_eval("luaeval('vim.api.nvim_set_current_dir(_A)', " + json.dumps(roots[0]) + ")")
@@ -175,6 +193,8 @@ def main():
                 assert observed()["cwd"] == roots[0]
                 print("PASS: manual cd survives same-root publication; changed=false event still fires", flush=True)
 
+                set_token(handles[0])
+                assert reopen(roots[0], "grove", True)["cwd"] == roots[0]
                 # A shell predating HERDR_SCRATCH_CONTEXT discovers it via tmux.
                 legacy_rpc = root / "legacy"
                 legacy_init = root / "legacy.lua"
@@ -195,11 +215,33 @@ def main():
                 assert reopen(pane_cwd, "cwd", False)["cwd"] == pane_cwd
                 print("PASS: missing, stale and file tokens fall back to live pane cwd; legacy environment lookup; VimEnter preserves cwd", flush=True)
 
-                set_token(roots[0])
+                missing_handle = hashlib.sha256(b"missing-handle").hexdigest()
+                set_token(missing_handle)
+                assert reopen(pane_cwd, "cwd", False)["cwd"] == pane_cwd
+                missing_context = json.loads(context("nvim").read_text())
+                print("OBSERVED: " + json.dumps({"missing_handle": missing_handle, "root": missing_context["root"], "root_source": missing_context["root_source"]}), flush=True)
+                invalid_handle = hashlib.sha256(b"invalid-handle").hexdigest()
+                for contents in (b"nvim\n", b"/missing/worktree\n", str(init).encode(), roots[0].encode() + b"\n\n", b"\xff"):
+                    handle_store.joinpath(invalid_handle).write_bytes(contents)
+                    set_token(invalid_handle)
+                    assert reopen(pane_cwd, "cwd", False)["cwd"] == pane_cwd
+                for invalid in ("nvim", "../nvim", "a" * 63, "a" * 65, "g" * 64):
+                    set_token(invalid)
+                    assert reopen(pane_cwd, "cwd", False)["cwd"] == pane_cwd
+                print("PASS: missing/invalid handle files, relative roots and malformed tokens fall back to pane cwd", flush=True)
+
+                # Neovim reports physical cwd; /tmp is a symlink on macOS.
+                legacy_root = (root / "legacy-root").resolve()
+                legacy_root.mkdir()
+                set_token(str(legacy_root))
+                assert reopen(str(legacy_root), "grove", True)["cwd"] == str(legacy_root)
+                print("PASS: legacy absolute-directory tokens remain supported", flush=True)
+
+                set_token(handles[0])
                 show("minimal")
                 first_pid = tmux(minimal_socket, "display-message", "-p", "-t", "=" + name("minimal") + ":", "#{pane_pid}")
                 hide("minimal")
-                set_token(roots[1])
+                set_token(handles[1])
                 show("minimal")
                 assert tmux(minimal_socket, "display-message", "-p", "-t", "=" + name("minimal") + ":", "#{pane_pid}") != first_pid
                 assert json.loads(context("minimal").read_text())["root"] == roots[1]
