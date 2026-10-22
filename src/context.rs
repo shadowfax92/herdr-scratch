@@ -147,10 +147,13 @@ struct PluginContext {
     focused_pane_cwd: Option<String>,
 }
 
+/// Local popup placement follows this pane; an SSH host moves execution and
+/// filesystem resolution to the remote without changing the parent pane ID.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SourcePane {
     pub pane_id: String,
     pub cwd: PathBuf,
+    pub ssh_host: Option<String>,
 }
 
 impl SourcePane {
@@ -174,7 +177,11 @@ impl SourcePane {
             .filter(|value| !value.trim().is_empty())
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?);
-        Ok(Self { pane_id, cwd })
+        Ok(Self {
+            pane_id,
+            cwd,
+            ssh_host: None,
+        })
     }
 }
 

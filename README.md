@@ -66,6 +66,55 @@ Both workspaces use their configured `tmux_prefix` and otherwise retain your nor
 
 Every open follows the parent pane's `grove_worktree` token: a 64-hex handle resolves through `${XDG_STATE_HOME:-$HOME/.local/state}/grove/worktrees/<hex>`, where Grove stores the absolute worktree root. Existing legacy absolute-directory tokens also work. Missing or invalid handles and directories fall back to the pane cwd. New windows in either scratch start there; running shells keep their cwd. Install the companion below so existing Neovim editors follow root changes too. A manual `:cd` sticks until the published root changes.
 
+## SSH panes
+
+With the Herdr fork's SSH panes feature enabled, `herdr ssh studio` connects a
+normal local pane to a remote host. Scratch popups from that pane keep their
+local dimensions and focus behavior, while Neovim, shells, tmux windows and
+splits run on the remote host in its projected cwd. A live or stale SSH link
+selects this mode; stock Herdr and panes without SSH metadata keep the existing
+local behavior. Set `[ssh_panes] enabled = false` in Herdr to disable the feature.
+
+Build a Scratch binary compatible with the remote host in a development
+worktree, then add these entries to the fork's `[ssh_panes.sync]` configuration.
+Replace the source paths with your checkout and the directory printed by
+`herdr plugin config-dir shadowfax.scratch`:
+
+```toml
+[ssh_panes.sync]
+paths = [
+  { src = "~/src/herdr-scratch/target/release/herdr-scratch", dest = "bin/herdr-scratch" },
+  { src = "~/src/herdr-scratch/nvim", dest = "nvim-plugins/herdr-scratch.nvim" },
+  { src = "~/.config/herdr/plugins/config/shadowfax.scratch", dest = "plugin-config/shadowfax.scratch" },
+]
+```
+
+Destinations are relative to `ssh_panes.remote_root` (default
+`~/.local/share/herdr-ssh-panes`). Run `herdr ssh sync studio` after updating the
+binary, companion or configuration; connection auto-sync also pushes changes.
+The remote host needs tmux and the configured scratch commands installed.
+
+The local popup execs `$HERDR_BIN_PATH ssh run studio -- …`, forwarding every
+`HERDR_SCRATCH_*` variable. Herdr expands the remote plugin state and config
+directories and resolves `herdr-scratch` from the payload's `bin` directory.
+Remote scratch state lives under
+`~/.local/state/herdr-ssh-panes/plugins/shadowfax.scratch/` by default.
+`HERDR_SSH_PANES_SERVER_ID` keeps session names stable across reconnects and
+socket-path changes. Hiding the popup detaches the remote tmux client, and the
+workspace persists through hiding or an SSH disconnect. The remote cleanup
+worker applies the same retention policy: an unreachable laptop is not a closed
+source pane, though hidden sessions can still expire by TTL. Grove handles are
+resolved on the remote host; missing handles fall back to the remote pane cwd.
+
+For the laptop's Neovim setup and Sidekick, also sync your Neovim configuration
+to `~/.config/herdr-sp-nvim` and Sidekick to `nvim-plugins/sidekick.nvim`, and set
+`ssh_panes.sync.nvim_appname = "herdr-sp-nvim"`. The mirrored configuration must
+honor `HERDR_SCRATCH_NVIM_DIR` and `HERDR_SIDEKICK_DIR`. Remote tmux sessions
+carry these paths, `NVIM_APPNAME`, `HERDR_BIN_PATH` and all `HERDR_SSH_PANES*`
+variables, so new windows retain the payload and parent-pane routing. Tools
+should use `$HERDR_BIN_PATH`; a bare `herdr` in a remote scratch shell may resolve
+to the host's own installation.
+
 ## Configuration
 
 For lazy.nvim, load the companion from your local Scratch checkout:

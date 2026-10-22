@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -23,23 +24,67 @@ pub(crate) fn server_socket_paths(state_dir: &Path) -> [PathBuf; 2] {
     [MINIMAL_SERVER_NAME, WORKSPACE_SERVER_NAME].map(|name| directory.join(name))
 }
 
+/// Routing back to the source Herdr server. Remote scratches use a stable
+/// server key for persistence, while the socket remains the live API route.
 pub struct HerdrEnvironment {
     socket_path: Option<String>,
     workspace_id: Option<String>,
     tab_id: Option<String>,
+    ssh_server_id: Option<String>,
+    remote_environment: Vec<(String, String)>,
 }
 
 impl HerdrEnvironment {
     pub fn from_process() -> Self {
+        Self::from_environment(
+            std::env::vars_os().filter_map(|(key, value)| {
+                Some((key.into_string().ok()?, value.into_string().ok()?))
+            }),
+        )
+    }
+
+    fn from_environment(environment: impl IntoIterator<Item = (String, String)>) -> Self {
+        let mut environment: HashMap<_, _> = environment.into_iter().collect();
+        // tmux outlives the SSH client. Refresh these session variables on each
+        // open so future windows use the payload and the forwarded local API.
+        // Local sessions keep their original explicit environment unchanged.
+        let mut remote_environment = Vec::new();
+        if environment
+            .get("HERDR_SSH_PANES")
+            .is_some_and(|value| value == "1")
+        {
+            remote_environment.extend(
+                environment
+                    .iter()
+                    .filter(|(key, _)| {
+                        key.starts_with("HERDR_SSH_PANES")
+                            || matches!(
+                                key.as_str(),
+                                "HERDR_BIN_PATH"
+                                    | "NVIM_APPNAME"
+                                    | "HERDR_SCRATCH_NVIM_DIR"
+                                    | "HERDR_SIDEKICK_DIR"
+                            )
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+            remote_environment.sort();
+        }
+        let mut nonempty = |key| environment.remove(key).filter(|value| !value.is_empty());
         Self {
-            socket_path: nonempty_process_environment("HERDR_SOCKET_PATH"),
-            workspace_id: nonempty_process_environment("HERDR_WORKSPACE_ID"),
-            tab_id: nonempty_process_environment("HERDR_TAB_ID"),
+            socket_path: nonempty("HERDR_SOCKET_PATH"),
+            workspace_id: nonempty("HERDR_WORKSPACE_ID"),
+            tab_id: nonempty("HERDR_TAB_ID"),
+            ssh_server_id: nonempty("HERDR_SSH_PANES_SERVER_ID"),
+            remote_environment,
         }
     }
 
     fn server_identity(&self) -> &str {
-        self.socket_path.as_deref().unwrap_or("default")
+        self.ssh_server_id
+            .as_deref()
+            .or(self.socket_path.as_deref())
+            .unwrap_or("default")
     }
 }
 
@@ -368,11 +413,8 @@ fn session_environment(session: &SessionSpec<'_>) -> Vec<(String, String)> {
             environment.push((key.into(), value.clone()));
         }
     }
+    environment.extend(session.herdr_environment.remote_environment.iter().cloned());
     environment
-}
-
-fn nonempty_process_environment(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
 fn workspace_overlay_command(prefix: &str, hide_keys: &[String]) -> String {
@@ -473,6 +515,35 @@ mod tests {
     }
 
     #[test]
+    fn remote_server_identity_survives_socket_changes_and_local_names_stay_unchanged() {
+        let environment = |socket: &str, server_id: Option<&str>| {
+            let mut values = vec![("HERDR_SOCKET_PATH".into(), socket.into())];
+            if let Some(server_id) = server_id {
+                values.push(("HERDR_SSH_PANES_SERVER_ID".into(), server_id.into()));
+            }
+            HerdrEnvironment::from_environment(values)
+        };
+        let name = |env: HerdrEnvironment| session_name("nvim", "w2:p1", env.server_identity());
+
+        assert_eq!(
+            name(environment("/tmp/first.sock", Some("laptop-server"))),
+            name(environment("/tmp/reconnected.sock", Some("laptop-server"))),
+        );
+        assert_ne!(
+            name(environment("/tmp/first.sock", Some("laptop-server"))),
+            name(environment("/tmp/first.sock", Some("other-server"))),
+        );
+        assert_eq!(
+            name(environment("/tmp/herdr.sock", None)),
+            "hs/nvim/0cb0c5e4a746/w2-p1",
+        );
+        assert_eq!(
+            HerdrEnvironment::from_environment([]).server_identity(),
+            "default",
+        );
+    }
+
+    #[test]
     fn minimal_mode_keeps_the_stripped_down_server() {
         let args = server_configuration_args(
             crate::config::TmuxMode::Minimal,
@@ -555,6 +626,8 @@ mod tests {
             socket_path: Some("/tmp/herdr.sock".into()),
             workspace_id: Some("w2".into()),
             tab_id: Some("w2:t4".into()),
+            ssh_server_id: None,
+            remote_environment: Vec::new(),
         };
         let hide_keys = ["M-i".into(), "M-0".into()];
         let session = SessionSpec {
@@ -622,5 +695,69 @@ mod tests {
             Path::new("/old/project"),
             "outdated",
         ));
+    }
+
+    #[test]
+    fn remote_tmux_receives_routing_and_nvim_paths_without_changing_local_environment() {
+        let values = [
+            ("HERDR_BIN_PATH", "/payload/bin/herdr"),
+            ("HERDR_SSH_PANES", "1"),
+            ("HERDR_SSH_PANES_HOST", "studio"),
+            ("HERDR_SSH_PANES_LINK", "link-1"),
+            ("HERDR_SSH_PANES_SERVER_ID", "server-1"),
+            ("HERDR_SSH_PANES_HOME", "/payload"),
+            ("HERDR_SSH_PANES_FUTURE", "preserved"),
+            ("NVIM_APPNAME", "herdr-sp-nvim"),
+            (
+                "HERDR_SCRATCH_NVIM_DIR",
+                "/payload/nvim-plugins/herdr-scratch.nvim",
+            ),
+            ("HERDR_SIDEKICK_DIR", "/payload/nvim-plugins/sidekick.nvim"),
+        ];
+        let scratch = ResolvedScratch {
+            name: "shell".into(),
+            command: vec!["fish".into(), "-l".into()],
+            tmx_type: "sh".into(),
+            clear_tmux_env: false,
+            tmux_mode: TmuxMode::Workspace,
+            tmux_prefix: Some("C-a".into()),
+            key: Some("alt+0".into()),
+        };
+        let environment = |remote| {
+            HerdrEnvironment::from_environment(
+                values
+                    .iter()
+                    .filter(|(key, _)| remote || !key.starts_with("HERDR_SSH_PANES"))
+                    .map(|(key, value)| ((*key).into(), (*value).into())),
+            )
+        };
+        let args = |env: &HerdrEnvironment| {
+            configured_session_args(&SessionSpec {
+                name: "hs/shell/server/w1-p1",
+                scratch: &scratch,
+                pane_id: "w1:p1",
+                cwd: Path::new("/remote/project"),
+                context_path: Path::new("/remote/state/context.json"),
+                prefix: "C-a",
+                hide_keys: &[],
+                herdr_environment: env,
+            })
+        };
+        let remote = args(&environment(true));
+        for (key, value) in values {
+            assert!(
+                remote
+                    .windows(2)
+                    .any(|pair| pair == ["-e", &format!("{key}={value}")]),
+                "missing {key}"
+            );
+        }
+        let local = args(&environment(false));
+        for (key, _) in values {
+            assert!(
+                !local.iter().any(|arg| arg.starts_with(&format!("{key}="))),
+                "changed local env: {key}"
+            );
+        }
     }
 }

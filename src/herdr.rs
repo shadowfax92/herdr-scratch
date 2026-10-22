@@ -16,6 +16,7 @@ pub struct PopupRequest {
     pub scratch_name: String,
     pub source_pane_id: String,
     pub source_cwd: PathBuf,
+    pub ssh_host: Option<String>,
     pub tmux_prefix: String,
     pub width: String,
     pub height: String,
@@ -38,6 +39,22 @@ struct PaneInfo {
     foreground_cwd: Option<String>,
     #[serde(default)]
     tokens: HashMap<String, String>,
+    ssh: Option<SshPane>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SshPane {
+    host: String,
+    state: String,
+}
+
+impl PaneInfo {
+    fn ssh_host(&self) -> Option<&str> {
+        self.ssh
+            .as_ref()
+            .filter(|ssh| matches!(ssh.state.as_str(), "live" | "stale") && !ssh.host.is_empty())
+            .map(|ssh| ssh.host.as_str())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +110,7 @@ impl Herdr {
         let response: CurrentPaneResponse =
             serde_json::from_str(&output).context("failed to parse `herdr pane current`")?;
         let pane = response.result.pane;
+        let ssh_host = pane.ssh_host().map(str::to_owned);
         let cwd = pane
             .foreground_cwd
             .or(pane.cwd)
@@ -101,7 +119,15 @@ impl Herdr {
         Ok(SourcePane {
             pane_id: pane.pane_id,
             cwd,
+            ssh_host,
         })
+    }
+
+    pub fn pane_ssh_host(&self, pane_id: &str) -> Result<Option<String>> {
+        let output = self.run(vec!["pane".into(), "get".into(), pane_id.into()])?;
+        let response: CurrentPaneResponse =
+            serde_json::from_str(&output).context("failed to parse `herdr pane get`")?;
+        Ok(response.result.pane.ssh_host().map(str::to_owned))
     }
 
     pub fn scratch_context(&self, pane_id: &str) -> Result<ScratchContext> {
@@ -117,6 +143,8 @@ impl Herdr {
             .filter(|cwd| !cwd.is_empty())
             .map(PathBuf::from)
             .context("source pane has no cwd")?;
+        // Remote run-popup reaches this only after SSH dispatch, so Grove
+        // handles and cwd are resolved against the remote filesystem there.
         Ok(ScratchContext::resolve(
             pane_id.to_owned(),
             cwd,
@@ -162,7 +190,7 @@ impl Herdr {
 }
 
 fn open_popup_args(request: &PopupRequest) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "plugin".into(),
         "pane".into(),
         "open".into(),
@@ -185,7 +213,11 @@ fn open_popup_args(request: &PopupRequest) -> Vec<String> {
         "--env".into(),
         format!("HERDR_SCRATCH_PREFIX={}", request.tmux_prefix),
         "--focus".into(),
-    ]
+    ];
+    if let Some(host) = &request.ssh_host {
+        args.extend(["--env".into(), format!("HERDR_SCRATCH_SSH_HOST={host}")]);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -198,6 +230,7 @@ mod tests {
             scratch_name: "nvim".into(),
             source_pane_id: "w2:p1".into(),
             source_cwd: PathBuf::from("/tmp/project"),
+            ssh_host: None,
             tmux_prefix: "C-a".into(),
             width: "70%".into(),
             height: "95%".into(),
@@ -226,5 +259,31 @@ mod tests {
             response.result.layout.area.x + response.result.layout.area.width,
             512
         );
+    }
+
+    #[test]
+    fn parses_optional_ssh_routing_only_for_live_or_stale_links() {
+        for (metadata, expected) in [
+            (serde_json::Value::Null, None),
+            (
+                serde_json::json!({"host":"studio", "link_id":"l1", "state":"live", "local_cwd":"/local"}),
+                Some("studio"),
+            ),
+            (
+                serde_json::json!({"host":"studio", "state":"stale"}),
+                Some("studio"),
+            ),
+            (
+                serde_json::json!({"host":"studio", "state":"unknown"}),
+                None,
+            ),
+        ] {
+            let mut value = serde_json::json!({"result":{"pane":{"pane_id":"w1:p2", "cwd":"/remote/project", "foreground_cwd":"/remote/foreground"}}});
+            if !metadata.is_null() {
+                value["result"]["pane"]["ssh"] = metadata;
+            }
+            let response: CurrentPaneResponse = serde_json::from_value(value).unwrap();
+            assert_eq!(response.result.pane.ssh_host(), expected);
+        }
     }
 }
