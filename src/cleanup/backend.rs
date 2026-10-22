@@ -19,7 +19,7 @@ use super::policy::{Owner, Reason};
 
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
-const FORMAT: &str = "#{pid}\t#{session_id}\t#{session_name}\t#{session_created}\t#{?session_last_attached,#{session_last_attached},0}\t#{session_activity}\t#{session_attached}\t#{@herdr_source_pane}\t#{HERDR_SOCKET_PATH}\t#{@herdr_env_version}";
+const FORMAT: &str = "#{pid}\t#{session_id}\t#{session_name}\t#{session_created}\t#{?session_last_attached,#{session_last_attached},0}\t#{session_activity}\t#{session_attached}\t#{@herdr_source_pane}\t#{HERDR_SOCKET_PATH}\t#{@herdr_env_version}\t#{HERDR_SSH_PANES_SERVER_ID}";
 
 #[derive(Clone, Debug)]
 /// A validated observation of one Scratch-owned tmux session. The snapshot is
@@ -102,7 +102,7 @@ pub(super) fn sessions(state_dir: &Path) -> Result<Vec<Session>> {
 
 fn parse_session(socket: &Path, line: &str) -> Option<Session> {
     let f: Vec<_> = line.split('\t').collect();
-    if f.len() != 10
+    if !matches!(f.len(), 10 | 11)
         || f[9] != "1"
         || !f[1].starts_with('$')
         || !f[1][1..].chars().all(|c| c.is_ascii_digit())
@@ -111,6 +111,14 @@ fn parse_session(socket: &Path, line: &str) -> Option<Session> {
     {
         return None;
     }
+    // Creation hashes the stable local-server key for remote scratches. The
+    // socket is still the live API route, never the remote session identity.
+    // Older/local sessions have no key and retain their socket-based names.
+    let server_identity = f
+        .get(10)
+        .copied()
+        .filter(|key| !key.is_empty())
+        .unwrap_or(f[8]);
     let name: Vec<_> = f[2].split('/').collect();
     if name.len() != 4
         || name[0] != "hs"
@@ -120,7 +128,7 @@ fn parse_session(socket: &Path, line: &str) -> Option<Session> {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         || f[7].is_empty()
         || f[7].chars().any(|c| !c.is_ascii_alphanumeric() && c != ':')
-        || crate::tmux::session_name(name[1], f[7], f[8]) != f[2]
+        || crate::tmux::session_name(name[1], f[7], server_identity) != f[2]
     {
         return None;
     }
@@ -574,6 +582,22 @@ mod tests {
             &line.replace("/tmp/herdr.sock", "/tmp/other.sock")
         )
         .is_none());
+    }
+
+    #[test]
+    fn remote_sessions_are_owned_by_stable_server_key_but_query_the_current_socket() {
+        let name = crate::tmux::session_name("shell", "w1:p1", "server-1");
+        for socket in ["/tmp/first.sock", "/tmp/reconnected.sock"] {
+            let line = format!("10\t$2\t{name}\t1\t2\t3\t0\tw1:p1\t{socket}\t1\tserver-1");
+            let session = parse_session(Path::new("/tmp/tmux"), &line).unwrap();
+            assert_eq!(session.herdr_socket, Path::new(socket));
+            assert_eq!(resolve_owner(&session, None, None).0, Owner::Unknown);
+            assert!(parse_session(
+                Path::new("/tmp/tmux"),
+                &line.replace("\tserver-1", "\tserver-2")
+            )
+            .is_none());
+        }
     }
 
     #[test]
