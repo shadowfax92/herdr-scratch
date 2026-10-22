@@ -64,12 +64,16 @@ pub(super) struct SessionSnapshot {
     pub errors: Vec<String>,
 }
 
-pub(super) fn session_snapshot(state_dir: &Path) -> SessionSnapshot {
+pub(super) fn session_snapshot(state_dir: &Path) -> Result<SessionSnapshot> {
     let mut snapshot = SessionSnapshot::default();
-    for socket in crate::tmux::server_socket_paths(state_dir) {
+    // A namespace/privacy error leaves every server unobserved. Abort before
+    // the sweep prunes its identity cache; an empty snapshot would incorrectly
+    // treat the previously observed sessions as gone.
+    for socket in crate::tmux::server_socket_paths(state_dir)? {
         if !socket.exists() {
             continue;
         }
+        crate::tmux::validate_socket_path(&socket)?;
         let output = match tmux(&socket, &["list-sessions", "-F", FORMAT]) {
             Ok(output) => output,
             Err(error) => {
@@ -88,12 +92,12 @@ pub(super) fn session_snapshot(state_dir: &Path) -> SessionSnapshot {
             }
         }
     }
-    snapshot
+    Ok(snapshot)
 }
 
 #[cfg(test)]
 pub(super) fn sessions(state_dir: &Path) -> Result<Vec<Session>> {
-    let snapshot = session_snapshot(state_dir);
+    let snapshot = session_snapshot(state_dir)?;
     if !snapshot.errors.is_empty() {
         bail!("{}", snapshot.errors.join("; "))
     }
@@ -270,7 +274,7 @@ pub(super) fn remove(session: &Session, reason: Reason) -> Result<bool> {
 /// Query names without ownership filtering to also protect a recreating session
 /// whose environment/metadata has not been installed yet; errors retain context.
 pub(super) fn context_in_use(state_dir: &Path, session_name: &str) -> Result<bool> {
-    for socket in crate::tmux::server_socket_paths(state_dir) {
+    for socket in crate::tmux::server_socket_paths(state_dir)? {
         if !socket.exists() {
             continue;
         }
@@ -283,6 +287,7 @@ pub(super) fn context_in_use(state_dir: &Path, session_name: &str) -> Result<boo
 }
 
 fn tmux(socket: &Path, args: &[&str]) -> Result<String> {
+    crate::tmux::validate_socket_path(socket)?;
     bounded_output(
         Command::new("tmux")
             .arg("-S")

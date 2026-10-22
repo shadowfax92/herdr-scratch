@@ -1,3 +1,5 @@
+use std::io::{self, IsTerminal, Write};
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -32,14 +34,24 @@ enum Command {
 }
 
 fn main() {
-    if let Err(error) = run() {
+    let command = Cli::parse().command;
+    let popup = matches!(command, Command::RunPopup);
+    if let Err(error) = run(command) {
         eprintln!("herdr-scratch: {error:#}");
+        // Native popups disappear on process exit. Retain failures on either
+        // side of SSH until acknowledged, while piped/worker invocations stay
+        // nonblocking and successful hide/detach never needs an extra key.
+        if popup && io::stdin().is_terminal() {
+            eprint!("Press Enter to close...");
+            let _ = io::stderr().flush();
+            let _ = io::stdin().read_line(&mut String::new());
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    match Cli::parse().command {
+fn run(command: Command) -> Result<()> {
+    match command {
         Command::Toggle { scratch } => herdr_scratch::toggle(&scratch),
         Command::RunPopup => herdr_scratch::run_popup(),
         Command::Config => herdr_scratch::show_config(),

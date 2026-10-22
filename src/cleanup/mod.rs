@@ -255,7 +255,7 @@ fn sweep(
         Err(e) => return Err(e.into()),
     };
     let deadline = Instant::now() + SWEEP_BUDGET;
-    let snapshot = backend::session_snapshot(root);
+    let snapshot = backend::session_snapshot(root)?;
     let sessions = snapshot.sessions;
     report.errors = snapshot.errors;
     report.owned_sessions = sessions.len();

@@ -25,7 +25,7 @@ impl Fixture {
             std::process::id(),
             NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
-        let [socket, _] = crate::tmux::server_socket_paths(&root);
+        let [socket, _] = crate::tmux::server_socket_paths(&root).unwrap();
         fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let source = root.join("missing-herdr.sock");
         let name = crate::tmux::session_name("shell", "w1:p1", source.to_str().unwrap());
@@ -96,7 +96,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        for socket in crate::tmux::server_socket_paths(&self.root) {
+        for socket in crate::tmux::server_socket_paths(&self.root).unwrap() {
             let _ = Self::command_at(&socket).arg("kill-server").output();
         }
         let _ = fs::remove_dir_all(&self.root);
@@ -107,7 +107,7 @@ impl Drop for Fixture {
 #[ignore = "requires tmux; allocates only isolated private sessions"]
 fn reaping_one_mode_preserves_context_for_the_other_mode() {
     let fixture = Fixture::new();
-    let [_, workspace] = crate::tmux::server_socket_paths(&fixture.root);
+    let [_, workspace] = crate::tmux::server_socket_paths(&fixture.root).unwrap();
     let source = fixture.root.join("missing-herdr.sock");
     let output = Fixture::command_at(&workspace)
         .args([
@@ -189,7 +189,7 @@ fn real_ttl_sweep_preserves_recent_and_foreign_sessions() {
 #[ignore = "requires tmux; allocates only isolated private sessions"]
 fn unavailable_private_server_does_not_block_the_other_server() {
     let fixture = Fixture::new();
-    let [_, unavailable] = crate::tmux::server_socket_paths(&fixture.root);
+    let [_, unavailable] = crate::tmux::server_socket_paths(&fixture.root).unwrap();
     fs::write(unavailable, b"stale socket").unwrap();
     let report = sweep(
         &fixture.root,
