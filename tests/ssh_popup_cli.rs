@@ -231,8 +231,6 @@ fn local_popup_replaces_itself_with_ssh_and_propagates_remote_exit_status() {
             "--env",
             "HERDR_SCRATCH_SOURCE_PANE=w2:p3",
             "--env",
-            "HERDR_SCRATCH_SSH_HOST=studio",
-            "--env",
             "HERDR_PLUGIN_STATE_DIR=@state/shadowfax.scratch",
             "--env",
             "HERDR_PLUGIN_CONFIG_DIR=@root/plugin-config/shadowfax.scratch",
@@ -242,6 +240,56 @@ fn local_popup_replaces_itself_with_ssh_and_propagates_remote_exit_status() {
         ]
     );
     assert!(!fixture.root.join("state/cleanup-worker.lock").exists());
+}
+
+#[test]
+fn cleanup_worker_detaches_its_session_only_on_the_remote() {
+    for remote in [false, true] {
+        let fixture = Fixture::new(None);
+        // Give this worker a unique executable path so process inspection
+        // cannot confuse it with workers belonging to another test or user.
+        let binary = fixture.root.join("bin/worker-scratch");
+        fs::copy(env!("CARGO_BIN_EXE_herdr-scratch"), &binary).unwrap();
+        let command = fixture.command(&["cleanup-start"]);
+        let mut launcher = Command::new(&binary);
+        launcher
+            .args(["cleanup-start"])
+            .env_clear()
+            .envs(command.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))));
+        if remote {
+            launcher.env("HERDR_SSH_PANES", "1");
+        }
+        assert!(launcher.status().unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let worker = loop {
+            let output = Command::new("ps")
+                .args(["-axo", "pid=,command="])
+                .output()
+                .unwrap();
+            let processes = String::from_utf8_lossy(&output.stdout);
+            if let Some(pid) = processes.lines().find_map(|line| {
+                let line = line.trim();
+                let (pid, argv) = line.split_once(char::is_whitespace)?;
+                (argv.trim() == format!("{} cleanup-worker", binary.display()))
+                    .then(|| pid.parse::<i32>().unwrap())
+            }) {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "worker did not start");
+            thread::sleep(Duration::from_millis(10));
+        };
+        // SAFETY: these read-only calls query this fixture's worker and the
+        // test process. Remote workers own a session; local workers inherit it.
+        let session = unsafe { libc::getsid(worker) };
+        let local_session = unsafe { libc::getsid(0) };
+        assert!(session > 0);
+        if remote {
+            assert_eq!(session, worker);
+            assert_ne!(session, local_session);
+        } else {
+            assert_eq!(session, local_session);
+        }
+    }
 }
 
 #[test]

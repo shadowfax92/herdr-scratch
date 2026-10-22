@@ -12,6 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -84,12 +85,29 @@ pub fn start() -> Result<()> {
         .append(true)
         .mode(0o600)
         .open(root.join("cleanup.log"))?;
-    Command::new(std::env::current_exe()?)
+    let mut command = Command::new(std::env::current_exe()?);
+    command
         .arg("cleanup-worker")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(log)
-        .spawn()?;
+        .stderr(log);
+    if std::env::var("HERDR_SSH_PANES").as_deref() == Ok("1") {
+        // A remote popup's SSH PTY disappears on hide/exit. The cleanup worker
+        // owns remote session reclamation even while no popup is attached, so
+        // it must leave that terminal session before exec and its SIGHUP.
+        // SAFETY: pre_exec calls only setsid and constructs an OS error; no
+        // locks, allocations or non-async-signal-safe runtime work occur here.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
+    command.spawn()?;
     // The worker waits for this short launcher lock to be released before
     // taking its lifetime lock. Concurrent launchers may spawn only losers.
     drop(owner);
