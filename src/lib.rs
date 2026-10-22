@@ -106,7 +106,10 @@ fn remote_popup_command(
     command.args([OsString::from("ssh"), OsString::from("run"), host.clone()]);
     environment.sort();
     for (key, value) in environment {
-        if key.as_encoded_bytes().starts_with(b"HERDR_SCRATCH_") {
+        // SSH_HOST routes only the local popup. The remote env contract owns
+        // host identity; forwarding this dispatch flag could send it back here.
+        if key.as_encoded_bytes().starts_with(b"HERDR_SCRATCH_") && key != "HERDR_SCRATCH_SSH_HOST"
+        {
             let mut assignment = key;
             assignment.push("=");
             assignment.push(value);
@@ -207,8 +210,6 @@ mod tests {
                 "HERDR_SCRATCH_SOURCE_CWD=/remote/project with spaces",
                 "--env",
                 "HERDR_SCRATCH_SOURCE_PANE=w2:p3",
-                "--env",
-                "HERDR_SCRATCH_SSH_HOST=studio",
                 "--env",
                 "HERDR_PLUGIN_STATE_DIR=@state/shadowfax.scratch",
                 "--env",
