@@ -99,6 +99,26 @@ with tempfile.TemporaryDirectory(prefix="sc-", dir="/tmp") as temporary:
         print("PASS: real source move, legacy alias recovery, closure, preview, foreign preservation")
 
         source = cli("pane", "split", keeper, "--direction", "right", "--cwd", str(root), "--no-focus")["result"]["pane"]["pane_id"]
+        name = create_scratch(source)
+        assert cleanup("cleanup", "--apply")["removed"] == 0
+        terminal = cli("pane", "get", source)["result"]["pane"]["terminal_id"]
+        identity = tmux("display-message", "-p", "-t", name, "#{session_id}:#{pane_pid}")
+        cli("server", "stop"); server.wait(timeout=5)
+        assert cleanup("cleanup", "--apply")["removed"] == 0
+        server = subprocess.Popen([herdr, "--session", "cleanup-test", "server"], env=env, stdout=log, stderr=log)
+        wait_for(lambda: cli("status", "--json").get("server", {}).get("running"))
+        restored = cli("pane", "get", source)["result"]["pane"]
+        assert restored["terminal_id"] != terminal, "restart did not recreate the terminal"
+        for _ in range(2):
+            report = cleanup("cleanup", "--apply")
+            assert report["candidates"] == [], report
+            assert tmux("display-message", "-p", "-t", name, "#{session_id}:#{pane_pid}") == identity
+        cli("pane", "close", source)
+        report = cleanup("cleanup", "--apply")
+        assert report["removed"] == 1 and report["candidates"][0]["reason"] == "source_closed", report
+        print("PASS: real cold restart preserves scratch process, re-adopts source, and later closure reaps")
+
+        source = cli("pane", "split", keeper, "--direction", "right", "--cwd", str(root), "--no-focus")["result"]["pane"]["pane_id"]
         create_scratch(source)
         plugin = root / "plugin"
         plugin.mkdir()

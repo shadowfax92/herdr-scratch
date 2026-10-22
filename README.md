@@ -252,6 +252,14 @@ Herdr's startup hook launches a separate worker process. Every sweep reloads con
 
 Only sessions matching Scratch's naming and ownership metadata are eligible. The worker resolves old pane aliases and remembers stable terminal IDs. A failed Herdr connection does not imply closure; the independent TTL still applies. Immediately before removing a session it rechecks tmux identity and, for TTL, attachment/activity, so a newly reopened scratch is preserved.
 
+After a Herdr restart, restored panes have new terminal IDs. If a reachable
+server shares none of the previously observed terminal IDs, cleanup treats it
+as a new server generation: scratches re-adopt their restored source pane, and
+missing sources stay unknown until the normal TTL expires. This applies to
+local and SSH scratches. Ordinary source closure still reaps a scratch while
+other observed terminals survive; a complete loss of terminal continuity is
+kept conservatively because Herdr does not expose a server instance token.
+
 For manual inspection, set `HERDR_PLUGIN_STATE_DIR` and `HERDR_PLUGIN_CONFIG_DIR` to this plugin's directories (Herdr supplies both to plugin commands), then run:
 
 ```sh

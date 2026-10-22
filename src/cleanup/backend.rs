@@ -183,10 +183,20 @@ pub(super) fn resolve_owner(
     session: &Session,
     known_terminal: Option<&str>,
     snapshot: Option<&HashMap<String, String>>,
+    restarted: bool,
 ) -> (Owner, Option<String>) {
     let Some(snapshot) = snapshot else {
         return (Owner::Unknown, None);
     };
+    if restarted {
+        // The local server recreates terminal IDs even for restored SSH panes.
+        // Rebind only a restored source; a missing source in a new generation
+        // is not evidence of closure and must remain subject to TTL alone.
+        return match snapshot.get(&session.source) {
+            Some(terminal) => (Owner::Live, Some(terminal.clone())),
+            None => (Owner::Unknown, None),
+        };
+    }
     if let Some(terminal) = known_terminal {
         // Terminal identity survives workspace moves; public pane IDs do not.
         let owner = if snapshot.values().any(|id| id == terminal) {
@@ -596,7 +606,7 @@ mod tests {
             let line = format!("10\t$2\t{name}\t1\t2\t3\t0\tw1:p1\t{socket}\t1\tserver-1");
             let session = parse_session(Path::new("/tmp/tmux"), &line).unwrap();
             assert_eq!(session.herdr_socket, Path::new(socket));
-            assert_eq!(resolve_owner(&session, None, None).0, Owner::Unknown);
+            assert_eq!(resolve_owner(&session, None, None, false).0, Owner::Unknown);
             assert!(parse_session(
                 Path::new("/tmp/tmux"),
                 &line.replace("\tserver-1", "\tserver-2")
@@ -615,16 +625,16 @@ mod tests {
         .unwrap();
         let moved = HashMap::from([("w2:p8".into(), "term1".into())]);
         assert_eq!(
-            resolve_owner(&session, Some("term1"), Some(&moved)).0,
+            resolve_owner(&session, Some("term1"), Some(&moved), false).0,
             Owner::Live
         );
         let reused = HashMap::from([("w1:p1".into(), "term2".into())]);
         assert_eq!(
-            resolve_owner(&session, Some("term1"), Some(&reused)).0,
+            resolve_owner(&session, Some("term1"), Some(&reused), false).0,
             Owner::Closed
         );
         assert_eq!(
-            resolve_owner(&session, Some("term1"), None).0,
+            resolve_owner(&session, Some("term1"), None, false).0,
             Owner::Unknown
         );
     }
