@@ -12,6 +12,7 @@ struct Fixture {
     root: PathBuf,
     socket: PathBuf,
     name: String,
+    remote: bool,
 }
 
 impl Fixture {
@@ -29,7 +30,12 @@ impl Fixture {
         fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let source = root.join("missing-herdr.sock");
         let name = crate::tmux::session_name("shell", "w1:p1", source.to_str().unwrap());
-        let fixture = Self { root, socket, name };
+        let fixture = Self {
+            root,
+            socket,
+            name,
+            remote: false,
+        };
         fixture.tmux(&["new-session", "-d", "-s", "foreign", "sleep 300"]);
         fixture.tmux(&["new-session", "-d", "-s", &fixture.name, "sleep 300"]);
         fixture.tmux(&[
@@ -50,8 +56,55 @@ impl Fixture {
         fixture
     }
 
+    fn remote() -> Self {
+        let mut fixture = Self::new();
+        let name = crate::tmux::session_name("shell", "w1:p1", "test-server");
+        fixture.tmux(&["rename-session", "-t", &fixture.name, &name]);
+        fixture.name = name;
+        fixture.remote = true;
+        fixture.tmux(&[
+            "set-environment",
+            "-t",
+            &fixture.name,
+            "HERDR_SSH_PANES_SERVER_ID",
+            "test-server",
+        ]);
+        fixture
+    }
+
     fn command(&self) -> Command {
         Self::command_at(&self.socket)
+    }
+
+    fn add_scratch(&self, source: &str) -> String {
+        let socket = self.root.join("missing-herdr.sock");
+        let name = crate::tmux::session_name("shell", source, socket.to_str().unwrap());
+        self.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            &name,
+            "sleep 300",
+            ";",
+            "set-option",
+            "-t",
+            &name,
+            "@herdr_source_pane",
+            source,
+            ";",
+            "set-option",
+            "-t",
+            &name,
+            "@herdr_env_version",
+            "1",
+            ";",
+            "set-environment",
+            "-t",
+            &name,
+            "HERDR_SOCKET_PATH",
+            socket.to_str().unwrap(),
+        ]);
+        name
     }
 
     fn command_at(socket: &Path) -> Command {
@@ -235,4 +288,300 @@ fn real_attachment_renews_ttl_and_blocks_stale_removal() {
     );
     let report = sweep(&fixture.root, &policy, true, false, now + 172800).unwrap();
     assert_eq!(report.removed, 1, "{:?}", report.errors);
+}
+
+/// Contract-only peer: the cleanup worker must not depend on the fork's build.
+/// Changing its pane snapshot models a cold restore across sweeps that reload
+/// persistent ownership state, just as a newly started worker does.
+struct HerdrFixture {
+    panes: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    next_panes:
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Vec<serde_json::Value>>>>,
+    remote: bool,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl HerdrFixture {
+    fn new(fixture: &Fixture) -> Self {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+        let listener = UnixListener::bind(fixture.root.join("missing-herdr.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let panes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let next_panes =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (snapshot, stopping) = (panes.clone(), stop.clone());
+        let next = next_panes.clone();
+        let worker = thread::spawn(move || {
+            while !stopping.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut line = String::new();
+                        BufReader::new(&stream).read_line(&mut line).unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let mut reply = serde_json::json!({"id": request["id"]});
+                        if request["method"] == "pane.list" {
+                            let panes = next
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .unwrap_or_else(|| snapshot.lock().unwrap().clone());
+                            reply["result"] = serde_json::json!({"panes": panes});
+                        } else {
+                            assert_eq!(request["method"], "pane.current");
+                            reply["error"] = serde_json::json!({"code": "pane_not_found"});
+                        }
+                        writeln!(stream, "{reply}").unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("Herdr fixture: {error}"),
+                }
+            }
+        });
+        Self {
+            panes,
+            next_panes,
+            remote: fixture.remote,
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn set_panes(&self, terminals: &[(&str, &str)]) {
+        *self.panes.lock().unwrap() = self.pane_values(terminals);
+    }
+
+    fn pane_values(&self, terminals: &[(&str, &str)]) -> Vec<serde_json::Value> {
+        terminals
+            .iter()
+            .map(|(pane, terminal)| {
+                let mut value = serde_json::json!({"pane_id": pane, "terminal_id": terminal});
+                if self.remote {
+                    value["ssh"] =
+                        serde_json::json!({"host":"studio", "link_id":"new-link", "state":"live"});
+                }
+                value
+            })
+            .collect()
+    }
+
+    fn queue_panes(&self, snapshots: &[&[(&str, &str)]]) {
+        *self.next_panes.lock().unwrap() = snapshots
+            .iter()
+            .map(|panes| self.pane_values(panes))
+            .collect();
+    }
+}
+
+impl Drop for HerdrFixture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn restart_readopts_restored_source_and_later_close_reaps() {
+    for remote in [false, true] {
+        let fixture = if remote {
+            Fixture::remote()
+        } else {
+            Fixture::new()
+        };
+        let herdr = HerdrFixture::new(&fixture);
+        let policy = CleanupConfig::default();
+        let now = now().unwrap();
+        herdr.set_panes(&[("w1:p1", "old-owner"), ("w1:p2", "old-keeper")]);
+        assert_eq!(
+            sweep(&fixture.root, &policy, true, false, now)
+                .unwrap()
+                .removed,
+            0
+        );
+        herdr.set_panes(&[("w1:p1", "new-owner"), ("w1:p2", "new-keeper")]);
+        let restarted = sweep(&fixture.root, &policy, true, false, now + 1).unwrap();
+        assert!(
+            restarted.candidates.is_empty(),
+            "restored scratch is not closed"
+        );
+        fixture.tmux(&["has-session", "-t", &fixture.name]);
+        // Each sweep reloads the cache, as an independently restarted worker does.
+        assert_eq!(
+            sweep(&fixture.root, &policy, true, false, now + 2)
+                .unwrap()
+                .removed,
+            0
+        );
+        herdr.set_panes(&[("w1:p2", "new-keeper")]);
+        let closed = sweep(&fixture.root, &policy, true, false, now + 3).unwrap();
+        assert_eq!(closed.removed, 1, "{:?}", closed.errors);
+        assert_eq!(closed.candidates[0].reason, Reason::SourceClosed);
+    }
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn restart_missing_source_stays_unknown_across_sweeps_until_ttl() {
+    let fixture = Fixture::new();
+    let herdr = HerdrFixture::new(&fixture);
+    let policy = CleanupConfig::default();
+    let now = now().unwrap();
+    herdr.set_panes(&[("w1:p1", "old-owner"), ("w1:p2", "old-keeper")]);
+    sweep(&fixture.root, &policy, true, false, now).unwrap();
+    herdr.set_panes(&[("w1:p2", "new-keeper")]);
+    for offset in [1, 2, 86399] {
+        let report = sweep(&fixture.root, &policy, true, false, now + offset).unwrap();
+        assert!(report.candidates.is_empty());
+        fixture.tmux(&["has-session", "-t", &fixture.name]);
+    }
+    let expired = sweep(&fixture.root, &policy, true, false, now + 86400).unwrap();
+    assert_eq!(expired.removed, 1);
+    assert_eq!(expired.candidates[0].reason, Reason::Expired);
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn same_instance_last_scratch_owner_closes_and_unreachable_host_is_unknown() {
+    let fixture = Fixture::new();
+    let herdr = HerdrFixture::new(&fixture);
+    let policy = CleanupConfig::default();
+    let now = now().unwrap();
+    herdr.set_panes(&[("w1:p1", "owner"), ("w1:p2", "keeper")]);
+    sweep(&fixture.root, &policy, true, false, now).unwrap();
+    drop(herdr);
+    let offline = sweep(&fixture.root, &policy, true, false, now + 1).unwrap();
+    assert!(offline.candidates.is_empty());
+    assert!(!offline.errors.is_empty());
+    fs::remove_file(fixture.root.join("missing-herdr.sock")).unwrap();
+    let herdr = HerdrFixture::new(&fixture);
+    herdr.set_panes(&[("w1:p2", "keeper")]);
+    let closed = sweep(&fixture.root, &policy, true, false, now + 2).unwrap();
+    assert_eq!(closed.removed, 1);
+    assert_eq!(closed.candidates[0].reason, Reason::SourceClosed);
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn restart_during_source_closure_recheck_keeps_and_readopts_scratch() {
+    let fixture = Fixture::new();
+    let herdr = HerdrFixture::new(&fixture);
+    let policy = CleanupConfig::default();
+    let now = now().unwrap();
+    herdr.set_panes(&[("w1:p1", "old-owner"), ("w1:p2", "old-keeper")]);
+    sweep(&fixture.root, &policy, true, false, now).unwrap();
+    herdr.set_panes(&[("w1:p1", "new-owner"), ("w1:p2", "new-keeper")]);
+    herdr.queue_panes(&[&[("w1:p2", "old-keeper")]]);
+    let report = sweep(&fixture.root, &policy, true, false, now + 1).unwrap();
+    assert_eq!(report.removed, 0);
+    assert_eq!(report.candidates.len(), 1, "must reach the closure recheck");
+    fixture.tmux(&["has-session", "-t", &fixture.name]);
+    assert!(sweep(&fixture.root, &policy, true, false, now + 2)
+        .unwrap()
+        .candidates
+        .is_empty());
+    herdr.set_panes(&[("w1:p2", "new-keeper")]);
+    assert_eq!(
+        sweep(&fixture.root, &policy, true, false, now + 3)
+            .unwrap()
+            .removed,
+        1
+    );
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn legacy_cache_restart_and_delayed_restore_readopt_without_losing_preview_state() {
+    let fixture = Fixture::new();
+    let herdr = HerdrFixture::new(&fixture);
+    let policy = CleanupConfig::default();
+    let now = now().unwrap();
+    herdr.set_panes(&[("w1:p1", "old-owner"), ("w1:p2", "old-keeper")]);
+    sweep(&fixture.root, &policy, true, false, now).unwrap();
+    let path = fixture.root.join("cleanup-state.json");
+    let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("hosts");
+    for record in legacy["records"].as_object_mut().unwrap().values_mut() {
+        record.as_object_mut().unwrap().remove("generation");
+    }
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    herdr.set_panes(&[("w1:p2", "new-keeper")]);
+    assert!(sweep(&fixture.root, &policy, false, false, now + 1)
+        .unwrap()
+        .candidates
+        .is_empty());
+    assert_eq!(fs::read(&path).unwrap(), bytes, "preview changed the cache");
+    for offset in [2, 3] {
+        assert!(sweep(&fixture.root, &policy, true, false, now + offset)
+            .unwrap()
+            .candidates
+            .is_empty());
+    }
+    herdr.set_panes(&[("w1:p1", "new-owner"), ("w1:p2", "new-keeper")]);
+    assert!(sweep(&fixture.root, &policy, true, false, now + 4)
+        .unwrap()
+        .candidates
+        .is_empty());
+    herdr.set_panes(&[("w1:p2", "new-keeper")]);
+    assert_eq!(
+        sweep(&fixture.root, &policy, true, false, now + 5)
+            .unwrap()
+            .removed,
+        1
+    );
+}
+
+#[test]
+#[ignore = "requires tmux; allocates only isolated private sessions"]
+fn restart_keeps_owner_first_observed_during_outage_until_ttl() {
+    let fixture = Fixture::new();
+    let herdr = HerdrFixture::new(&fixture);
+    let policy = CleanupConfig::default();
+    let now = now().unwrap();
+    herdr.set_panes(&[("w1:p1", "old-owner"), ("w1:p2", "old-keeper")]);
+    sweep(&fixture.root, &policy, true, false, now).unwrap();
+    drop(herdr);
+    let pending = fixture.add_scratch("w1:p3");
+    assert!(sweep(&fixture.root, &policy, true, false, now + 1)
+        .unwrap()
+        .candidates
+        .is_empty());
+    fs::remove_file(fixture.root.join("missing-herdr.sock")).unwrap();
+    let herdr = HerdrFixture::new(&fixture);
+    let unscanned = fixture.add_scratch("w1:p4");
+    herdr.set_panes(&[("w1:p1", "new-owner"), ("w1:p2", "new-keeper")]);
+    for offset in [2, 3] {
+        let report = sweep(&fixture.root, &policy, true, false, now + offset).unwrap();
+        assert!(
+            report.candidates.is_empty(),
+            "an outage-discovered owner is unknown after restart"
+        );
+        fixture.tmux(&["has-session", "-t", &pending]);
+        fixture.tmux(&["has-session", "-t", &unscanned]);
+    }
+    // Once the new generation is known, newly discovered scratches whose
+    // sources really closed must retain the ordinary closure behavior.
+    let fresh = fixture.add_scratch("w1:p5");
+    let closed = sweep(&fixture.root, &policy, true, false, now + 4).unwrap();
+    assert_eq!(closed.removed, 1);
+    assert_eq!(closed.candidates[0].session, fresh);
+    assert_eq!(closed.candidates[0].reason, Reason::SourceClosed);
+    assert!(sweep(&fixture.root, &policy, true, false, now + 86399)
+        .unwrap()
+        .candidates
+        .is_empty());
+    let expired = sweep(&fixture.root, &policy, true, false, now + 86402).unwrap();
+    assert_eq!(expired.removed, 3);
+    assert!(expired
+        .candidates
+        .iter()
+        .all(|candidate| candidate.reason == Reason::Expired));
 }

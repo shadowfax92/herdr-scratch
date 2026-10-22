@@ -33,12 +33,92 @@ const MAX_REMOVALS: usize = 16;
 struct State {
     cursor: usize,
     records: HashMap<String, Record>,
+    #[serde(default)]
+    hosts: HashMap<PathBuf, Host>,
 }
 
+/// Generation is assigned at discovery, even when an outage prevents learning
+/// the terminal. Only a confirmed live owner may rebind it to a newer server.
 #[derive(Default, Serialize, Deserialize)]
 struct Record {
     terminal: Option<String>,
     last_used: u64,
+    #[serde(default)]
+    generation: u64,
+}
+
+/// Herdr's public pane IDs survive cold restores, but its terminal IDs do not.
+/// Keep continuity per API socket (also through a remote forwarding symlink),
+/// independently of the private tmux server that owns the persistent scratch.
+#[derive(Default, Serialize, Deserialize)]
+struct Host {
+    generation: u64,
+    terminals: HashSet<String>,
+}
+
+/// One reachable API read paired with its persisted continuity generation.
+struct HostSnapshot {
+    generation: u64,
+    panes: HashMap<String, String>,
+}
+
+impl State {
+    fn observe(
+        &mut self,
+        socket: &Path,
+        panes: HashMap<String, String>,
+        sessions: &[backend::Session],
+    ) -> HostSnapshot {
+        let host = self
+            .hosts
+            .entry(socket.to_path_buf())
+            .or_insert_with(|| Host {
+                // Upgrade older caches without discarding their only continuity
+                // evidence. Seed every remembered owner before adopting any of them.
+                terminals: sessions
+                    .iter()
+                    .filter(|session| session.herdr_socket == socket)
+                    .filter_map(|session| self.records.get(&session.key())?.terminal.clone())
+                    .collect(),
+                ..Host::default()
+            });
+        let terminals = panes.values().cloned().collect();
+        // Stock Herdr exposes no instance token. A reachable snapshot with no
+        // surviving terminal is conservatively a new generation. Remember ALL
+        // panes, including those without scratches, so closing a sole scratch
+        // owner while other panes survive still proves ordinary source closure.
+        if !host.terminals.is_empty() && host.terminals.is_disjoint(&terminals) {
+            host.generation += 1;
+        }
+        host.terminals = terminals;
+        HostSnapshot {
+            generation: host.generation,
+            panes,
+        }
+    }
+
+    fn owner(&mut self, session: &backend::Session, host: Option<&HostSnapshot>) -> Owner {
+        let Some(host) = host else {
+            return Owner::Unknown;
+        };
+        let record = self
+            .records
+            .get_mut(&session.key())
+            .expect("session discovery precedes owner resolution");
+        let (owner, terminal) = backend::resolve_owner(
+            session,
+            record.terminal.as_deref(),
+            Some(&host.panes),
+            record.generation != host.generation,
+        );
+        if let Some(terminal) = terminal {
+            record.terminal = Some(terminal);
+            record.generation = host.generation;
+        }
+        // An orphan keeps its old generation across worker restarts and sweeps;
+        // merely reaching the new server never becomes proof that it closed.
+        owner
+    }
 }
 
 #[derive(Default, Serialize)]
@@ -267,6 +347,23 @@ fn sweep(
                 .iter()
                 .any(|socket| key.starts_with(&format!("{}:", socket.display())))
     });
+    // Bind ALL discoveries before any API read can advance a host generation.
+    // This includes owners without a cached terminal (offline discovery or a
+    // bounded sweep that has not reached them yet). Their uncertainty survives
+    // a restart regardless of which session happens to be scanned first.
+    for session in &sessions {
+        let generation = state
+            .hosts
+            .get(&session.herdr_socket)
+            .map_or(0, |host| host.generation);
+        state
+            .records
+            .entry(session.key())
+            .or_insert_with(|| Record {
+                generation,
+                ..Record::default()
+            });
+    }
     let mut hosts = HashMap::new();
     for offset in 0..sessions.len() {
         if Instant::now() >= deadline
@@ -280,16 +377,20 @@ fn sweep(
         let index = (state.cursor + offset) % sessions.len();
         let session = &sessions[index];
         report.scanned += 1;
-        let record = state.records.entry(session.key()).or_default();
+        let record = state
+            .records
+            .get_mut(&session.key())
+            .expect("session discovery precedes scanning");
         record.last_used = record.last_used.max(session.last_used());
         if session.attached {
             record.last_used = record.last_used.max(now)
         }
+        let last_used = record.last_used;
         let host =
             hosts
                 .entry(session.herdr_socket.clone())
                 .or_insert_with(|| match backend::panes(&session.herdr_socket) {
-                    Ok(panes) => Some(panes),
+                    Ok(panes) => Some(state.observe(&session.herdr_socket, panes, &sessions)),
                     Err(error) => {
                         report
                             .errors
@@ -297,15 +398,11 @@ fn sweep(
                         None
                     }
                 });
-        let (owner, terminal) =
-            backend::resolve_owner(session, record.terminal.as_deref(), host.as_ref());
-        if terminal.is_some() {
-            record.terminal = terminal
-        }
+        let owner = state.owner(session, host.as_ref());
         let Some(reason) = policy::decide(
             owner,
             session.attached,
-            record.last_used,
+            last_used,
             now,
             policy.ttl_hours * 3600,
         ) else {
@@ -315,13 +412,18 @@ fn sweep(
         if apply {
             // Revalidate source closure just before mutation. A successful
             // transport read is required; a dropped/restarting host is kept.
-            let revalidated = reason != Reason::SourceClosed
-                || backend::panes(&session.herdr_socket)
+            let revalidated = if reason == Reason::SourceClosed {
+                let fresh = backend::panes(&session.herdr_socket)
                     .ok()
-                    .is_some_and(|panes| {
-                        backend::resolve_owner(session, record.terminal.as_deref(), Some(&panes)).0
-                            == Owner::Closed
-                    });
+                    .map(|panes| state.observe(&session.herdr_socket, panes, &sessions));
+                let closed = state.owner(session, fresh.as_ref()) == Owner::Closed;
+                // A restart can occur between discovery and deletion. Publish
+                // its new generation to the rest of this sweep before mutation.
+                hosts.insert(session.herdr_socket.clone(), fresh);
+                closed
+            } else {
+                true
+            };
             if revalidated && !(cancellable && root.join("cleanup.stop").exists()) {
                 match backend::remove(session, reason) {
                     Ok(did_remove) => removed = did_remove,
@@ -351,7 +453,7 @@ fn sweep(
         report.candidates.push(Candidate {
             session: session.name.clone(),
             reason,
-            last_used: record.last_used,
+            last_used,
             removed,
         });
     }
