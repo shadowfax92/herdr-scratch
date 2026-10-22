@@ -68,8 +68,9 @@ fn state_dir() -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Startup hooks only launch/check the separate worker. They never enumerate
-/// tmux or Herdr sessions, and no popup command calls even this launcher.
+/// Startup hooks only launch/check the separate worker; they never enumerate
+/// tmux or Herdr sessions. Remote popups also ensure it is running because
+/// `herdr ssh run` does not execute the local plugin's startup hooks.
 pub fn start() -> Result<()> {
     let root = state_dir()?;
     let restarting = root.join("cleanup.stop").exists();
