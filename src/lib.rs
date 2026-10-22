@@ -6,11 +6,10 @@ mod prefix;
 mod tmux;
 
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use config::LoadedConfig;
 use context::SourcePane;
@@ -47,11 +46,24 @@ pub fn toggle(name: &str) -> Result<()> {
 }
 
 pub fn run_popup() -> Result<()> {
-    // The native popup owns the local PTY; replace its process with the side
-    // channel before resolving paths or loading any local scratch state. A
-    // remote detach/exit then closes the popup without an extra local wrapper.
+    // Keep the local popup process alive until the SSH side channel completes.
+    // It owns the error display even if SSH fails before remote scratch starts;
+    // successful detaches still return immediately without a prompt.
     if let Some(mut command) = remote_popup_command(std::env::vars_os()) {
-        return Err(command.exec()).context("failed to execute remote scratch popup");
+        let host = std::env::var("HERDR_SCRATCH_SSH_HOST")?;
+        // Inherit the PTY streams so both the editor and SSH's diagnostic hints
+        // remain visible. Capturing output would break the interactive editor.
+        let status = command
+            .status()
+            .with_context(|| format!("failed to start scratch on {host}"))?;
+        if !status.success() {
+            let code = status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".into());
+            bail!("scratch on {host} failed (exit {code})");
+        }
+        return Ok(());
     }
     let scratch_name =
         std::env::var("HERDR_SCRATCH_NAME").context("HERDR_SCRATCH_NAME is missing")?;
@@ -176,7 +188,7 @@ mod tests {
     use toml_edit::DocumentMut;
 
     #[test]
-    fn remote_popup_exec_forwards_scratch_values_as_individual_arguments() {
+    fn remote_popup_forwards_scratch_values_as_individual_arguments() {
         let command = remote_popup_command(
             [
                 ("HERDR_SCRATCH_SSH_HOST", "studio"),

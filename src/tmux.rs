@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -16,12 +16,60 @@ const WORKSPACE_SERVER_NAME: &str = "shadowfax-herdr-workspace";
 const WORKSPACE_HOOK_INDEX: u16 = 999;
 const ENV_VERSION: &str = "1";
 
-/// Discovery and creation share this namespace. tmux appends the effective
-/// user's directory to TMUX_TMPDIR when selecting a named (-L) server.
-pub(crate) fn server_socket_paths(state_dir: &Path) -> [PathBuf; 2] {
+/// Creation, session updates and cleanup must agree on both private servers.
+/// Remote state roots exceed macOS's socket limit, so only their sockets move
+/// to /tmp; persistent contexts and worker state stay under the state root.
+pub(crate) fn server_socket_paths(state_dir: &Path) -> Result<[PathBuf; 2]> {
     // SAFETY: geteuid has no pointers or side effects.
-    let directory = state_dir.join(format!("tmux-{}", unsafe { libc::geteuid() }));
-    [MINIMAL_SERVER_NAME, WORKSPACE_SERVER_NAME].map(|name| directory.join(name))
+    let uid = unsafe { libc::geteuid() };
+    let remote = std::env::var("HERDR_SSH_PANES").as_deref() == Ok("1");
+    let directory = socket_directory(state_dir, uid, remote);
+    let paths = [MINIMAL_SERVER_NAME, WORKSPACE_SERVER_NAME].map(|name| directory.join(name));
+    if remote {
+        ensure_private_socket_directory(&directory, uid)?;
+    }
+    Ok(paths)
+}
+
+fn socket_directory(state_dir: &Path, uid: u32, remote: bool) -> PathBuf {
+    if remote {
+        let digest = Sha256::digest(state_dir.as_os_str().as_encoded_bytes());
+        let hash = digest[..4]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        PathBuf::from(format!("/tmp/hsp-{uid}-{hash}"))
+    } else {
+        // Preserve tmux's existing -L/TMUX_TMPDIR namespace exactly locally.
+        state_dir.join(format!("tmux-{uid}"))
+    }
+}
+
+pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
+    let length = path.as_os_str().as_encoded_bytes().len();
+    if length > 103 {
+        bail!(
+            "tmux socket path {} is {length} bytes; maximum is 103 bytes",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_private_socket_directory(directory: &Path, uid: u32) -> Result<()> {
+    // Set permissions at creation, never chmod an existing /tmp entry: it may
+    // belong to another user or be a symlink into unrelated persistent state.
+    match fs::DirBuilder::new().mode(0o700).create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error).with_context(|| format!("create {}", directory.display())),
+    }
+    let metadata = fs::symlink_metadata(directory)
+        .with_context(|| format!("inspect tmux socket directory {}", directory.display()))?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o7777 != 0o700 {
+        bail!("refusing unsafe tmux socket directory {}: must be a directory owned by uid {uid} with mode 0700, not a symlink", directory.display());
+    }
+    Ok(())
 }
 
 /// Routing back to the source Herdr server. Remote scratches use a stable
@@ -102,6 +150,7 @@ struct SessionSpec<'a> {
 struct TmuxServer<'a> {
     state_dir: &'a Path,
     mode: TmuxMode,
+    remote_socket: Option<&'a Path>,
 }
 
 pub fn run(
@@ -113,9 +162,27 @@ pub fn run(
     hide_keys: &[String],
 ) -> Result<()> {
     ensure_state_dir(state_dir)?;
+    let sockets = server_socket_paths(state_dir)?;
+    let socket = &sockets[match scratch.tmux_mode {
+        TmuxMode::Minimal => 0,
+        TmuxMode::Workspace => 1,
+    }];
+    let remote = std::env::var("HERDR_SSH_PANES").as_deref() == Ok("1");
+    let actual_socket = if remote {
+        socket.clone()
+    } else {
+        // Named (-L) servers canonicalize TMUX_TMPDIR before appending their
+        // socket name. On macOS /tmp -> /private/tmp adds eight bytes. Keep the
+        // original launch arguments, but measure the path tmux actually binds.
+        fs::canonicalize(state_dir)?.join(socket.strip_prefix(state_dir)?)
+    };
+    // Validate the server being used: a valid 103-byte minimal socket must not
+    // be rejected because the unused workspace server name is two bytes longer.
+    validate_socket_path(&actual_socket)?;
     let server = TmuxServer {
         state_dir,
         mode: scratch.tmux_mode,
+        remote_socket: remote.then_some(socket.as_path()),
     };
 
     let name = session_name(
@@ -150,9 +217,12 @@ pub fn run(
     // tmux's session cwd controls future windows/splits, never existing shells.
     command.args(["attach-session", "-t", &exact_target(&name), "-c"]);
     command.arg(&context.root);
-    let _status = command
+    let status = command
         .status()
         .context("failed to attach tmux scratch session")?;
+    if !status.success() {
+        bail!("failed to attach tmux scratch session ({status})");
+    }
     Ok(())
 }
 
@@ -257,8 +327,15 @@ impl TmuxServer<'_> {
 
     fn command(&self) -> Command {
         let mut command = Command::new("tmux");
+        if let Some(socket) = self.remote_socket {
+            command.arg("-S").arg(socket);
+            if self.mode == TmuxMode::Minimal {
+                command.args(["-f", "/dev/null"]);
+            }
+        } else {
+            command.args(tmux_args(self.mode));
+        }
         command
-            .args(tmux_args(self.mode))
             .env("TMUX_TMPDIR", self.state_dir)
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
@@ -500,6 +577,64 @@ fn exact_target(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_namespace_preserves_local_paths_and_shortens_remote_state_roots() {
+        let state = Path::new("/some/state");
+        assert_eq!(
+            socket_directory(state, 501, false),
+            Path::new("/some/state/tmux-501")
+        );
+        assert_eq!(
+            socket_directory(state, 501, true),
+            Path::new("/tmp/hsp-501-65299727")
+        );
+        assert_ne!(
+            socket_directory(state, 501, true),
+            socket_directory(state, 502, true)
+        );
+        assert_ne!(
+            socket_directory(state, 501, true),
+            socket_directory(Path::new("/other/state"), 501, true)
+        );
+        let remote = socket_directory(Path::new(&"x".repeat(1000)), 501, true);
+        for name in [MINIMAL_SERVER_NAME, WORKSPACE_SERVER_NAME] {
+            validate_socket_path(&remote.join(name)).unwrap();
+        }
+    }
+
+    #[test]
+    fn socket_limit_counts_bytes_and_leaves_room_for_the_nul() {
+        validate_socket_path(Path::new(&"x".repeat(103))).unwrap();
+        let error = validate_socket_path(Path::new(&"x".repeat(104))).unwrap_err();
+        assert!(error.to_string().contains("104 bytes"));
+        assert!(validate_socket_path(Path::new(&"é".repeat(52))).is_err());
+    }
+
+    #[test]
+    fn private_socket_directory_refuses_foreign_owners_modes_files_and_symlinks() {
+        // No process environment changes: concurrent tests cannot accidentally
+        // redirect a local worker into another test's remote socket namespace.
+        let root = PathBuf::from(format!("/tmp/scratch-private-dir-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let directory = root.join("socket");
+        // SAFETY: geteuid has no pointers or side effects.
+        let uid = unsafe { libc::geteuid() };
+        ensure_private_socket_directory(&directory, uid).unwrap();
+        ensure_private_socket_directory(&directory, uid).unwrap();
+        assert!(ensure_private_socket_directory(&directory, uid + 1).is_err());
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(ensure_private_socket_directory(&directory, uid).is_err());
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o7777, 0o755);
+        fs::remove_dir(&directory).unwrap();
+        fs::write(&directory, "foreign entry").unwrap();
+        assert!(ensure_private_socket_directory(&directory, uid).is_err());
+        fs::remove_file(&directory).unwrap();
+        std::os::unix::fs::symlink(&root, &directory).unwrap();
+        assert!(ensure_private_socket_directory(&directory, uid).is_err());
+        fs::remove_file(&directory).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn session_identity_is_per_kind_pane_and_server() {

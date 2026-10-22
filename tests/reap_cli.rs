@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sha2::{Digest, Sha256};
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
@@ -16,7 +18,9 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
+        // Keep ordinary fixtures within the same 103-byte socket budget as
+        // production; macOS's per-user temp root can exceed it by itself.
+        let root = PathBuf::from("/tmp").join(format!(
             "scratch-reap-cli-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -117,4 +121,35 @@ fn failed_notification_does_not_change_successful_cleanup_exit_status() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("reap notification"));
     assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok());
+}
+
+#[test]
+fn socket_resolution_failure_preserves_cached_terminal_identities() {
+    let fixture = Fixture::new();
+    let state = fixture
+        .root
+        .join("long-state-".to_owned() + &"x".repeat(100));
+    fs::create_dir(&state).unwrap();
+    let cache = state.join("cleanup-state.json");
+    let contents = r#"{"cursor":7,"records":{"unavailable-server":{"terminal":"stable-terminal","last_used":1234}}}"#;
+    fs::write(&cache, contents).unwrap();
+    let hash = format!("{:x}", Sha256::digest(state.as_os_str().as_encoded_bytes()));
+    // SAFETY: geteuid has no pointers or side effects.
+    let directory = PathBuf::from(format!(
+        "/tmp/hsp-{}-{}",
+        unsafe { libc::geteuid() },
+        &hash[..8]
+    ));
+    fs::create_dir(&directory).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_herdr-scratch"))
+        .args(["cleanup", "--apply"])
+        .env("HERDR_PLUGIN_CONFIG_DIR", fixture.root.join("config"))
+        .env("HERDR_PLUGIN_STATE_DIR", &state)
+        .env("HERDR_SSH_PANES", "1")
+        .output()
+        .unwrap();
+    fs::remove_dir(directory).unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(cache).unwrap(), contents);
 }

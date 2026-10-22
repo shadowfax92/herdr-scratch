@@ -94,7 +94,7 @@ Destinations are relative to `ssh_panes.remote_root` (default
 binary, companion or configuration; connection auto-sync also pushes changes.
 The remote host needs tmux and the configured scratch commands installed.
 
-The local popup execs `$HERDR_BIN_PATH ssh run studio -- …`, forwarding every
+The local popup starts `$HERDR_BIN_PATH ssh run studio -- …` and waits, forwarding every
 `HERDR_SCRATCH_*` variable. Herdr expands the remote plugin state and config
 directories and resolves `herdr-scratch` from the payload's `bin` directory.
 Remote scratch state lives under
@@ -105,6 +105,22 @@ workspace persists through hiding or an SSH disconnect. The remote cleanup
 worker applies the same retention policy: an unreachable laptop is not a closed
 source pane, though hidden sessions can still expire by TTL. Grove handles are
 resolved on the remote host; missing handles fall back to the remote pane cwd.
+
+In remote mode (`HERDR_SSH_PANES=1`), the two private tmux socket paths are
+`/tmp/hsp-<uid>-<hash>/shadowfax-herdr-scratch` and
+`/tmp/hsp-<uid>-<hash>/shadowfax-herdr-workspace`, where `<hash>` is the first
+eight lowercase hex digits of SHA-256 over the state directory's path bytes.
+Popup clients, session updates, the cleanup worker and reaping use this same
+resolution. The socket directory is created with mode `0700`; existing entries
+must be directories owned by the effective user with exactly that mode, and
+symlinks are refused. Local sockets retain their existing paths beneath the
+plugin state directory. In either mode, a socket path over 103 bytes produces
+an error naming the path and its byte length before tmux is invoked.
+
+Popup errors remain visible until Enter is pressed when stdin is a terminal.
+On an SSH failure, the local popup also displays `scratch on <host> failed
+(exit N)` alongside the SSH diagnostics. Successful exits and hides close the
+popup immediately; commands with piped input never wait for acknowledgement.
 
 For the laptop's Neovim setup and Sidekick, also sync your Neovim configuration
 to `~/.config/herdr-sp-nvim` and Sidekick to `nvim-plugins/sidekick.nvim`, and set
@@ -215,7 +231,7 @@ Then bind `shadowfax.scratch.toggle-lazygit` in Herdr and re-link the local chec
 
 ## How persistence works
 
-Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server under the plugin state directory owns the long-running process. Minimal and workspace scratches use separate servers so their prefix, status, and key behavior remain independent. The popup client detaches when hidden and reattaches on the next toggle. The background retention policy below limits how long hidden sessions remain alive.
+Each scratch session is identified by the scratch name, source pane, and Herdr server. Herdr renders the popup, while a private tmux server owns the long-running process. Its socket lives under the plugin state directory locally, or the short private directory described above remotely. Minimal and workspace scratches use separate servers so their prefix, status, and key behavior remain independent. The popup client detaches when hidden and reattaches on the next toggle. The background retention policy below limits how long hidden sessions remain alive.
 
 ### Background cleanup
 
