@@ -390,7 +390,26 @@ fn minimal_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Vec<
         vec!["set-option", "-g", "status", "off"],
         vec!["set-option", "-g", "prefix", prefix],
         vec!["set-option", "-g", "prefix2", "None"],
-        vec!["set-option", "-g", "mouse", "off"],
+        vec!["set-option", "-g", "mouse", "on"],
+        vec!["set-option", "-s", "set-clipboard", "on"],
+        vec![
+            "bind-key",
+            "-T",
+            "copy-mode",
+            "MouseDragEnd1Pane",
+            "send-keys",
+            "-X",
+            "copy-selection-and-cancel",
+        ],
+        vec![
+            "bind-key",
+            "-T",
+            "copy-mode-vi",
+            "MouseDragEnd1Pane",
+            "send-keys",
+            "-X",
+            "copy-selection-and-cancel",
+        ],
         vec!["set-option", "-s", "escape-time", "0"],
         vec!["set-option", "-g", "default-terminal", "tmux-256color"],
         vec!["set-option", "-g", "remain-on-exit", "off"],
@@ -436,7 +455,33 @@ fn workspace_server_configuration_args(prefix: &str, hide_keys: &[String]) -> Ve
         ]);
     }
     commands.extend(workspace_overlay_commands(prefix, hide_keys));
+    commands.extend(mouse_selection_commands());
     flatten_commands(commands)
+}
+
+/// Herdr popups lack native text selection, so tmux selects and copies via
+/// OSC52, then leaves copy-mode on release so the highlight clears. Kept out of
+/// the workspace hook so a user's own tmux.conf can still change it.
+fn mouse_selection_commands() -> Vec<Vec<String>> {
+    let mut commands = vec![
+        vec!["set-option", "-g", "mouse", "on"],
+        vec!["set-option", "-s", "set-clipboard", "on"],
+    ];
+    for table in ["copy-mode", "copy-mode-vi"] {
+        commands.push(vec![
+            "bind-key",
+            "-T",
+            table,
+            "MouseDragEnd1Pane",
+            "send-keys",
+            "-X",
+            "copy-selection-and-cancel",
+        ]);
+    }
+    commands
+        .into_iter()
+        .map(|command| command.into_iter().map(str::to_owned).collect())
+        .collect()
 }
 
 fn configured_session_args(session: &SessionSpec<'_>) -> Vec<String> {
@@ -698,6 +743,19 @@ mod tests {
         assert!(args
             .windows(4)
             .any(|part| part == ["set-option", "-g", "status", "off"]));
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["set-option", "-g", "mouse", "on"]));
+        assert!(args.windows(7).any(|part| part
+            == [
+                "bind-key",
+                "-T",
+                "copy-mode-vi",
+                "MouseDragEnd1Pane",
+                "send-keys",
+                "-X",
+                "copy-selection-and-cancel"
+            ]));
         assert_eq!(
             tmux_args(crate::config::TmuxMode::Minimal),
             ["-L", MINIMAL_SERVER_NAME, "-f", "/dev/null"]
@@ -724,6 +782,11 @@ mod tests {
             .windows(4)
             .any(|part| part == ["set-option", "-g", "status", "off"]));
         assert!(!args.iter().any(|part| part == "unbind-key"));
+
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["set-option", "-g", "mouse", "on"]));
+        assert!(!overlay.contains("mouse"));
 
         let first_hook = args
             .iter()
