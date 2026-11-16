@@ -496,11 +496,25 @@ fn configured_session_args(session: &SessionSpec<'_>) -> Vec<String> {
         "-c".into(),
         session.cwd.to_string_lossy().into_owned(),
     ]);
+    // A detached session defaults to 80x24 and zsh draws its first prompt on the
+    // bottom row; resizing to the popup later leaves that prompt mid-screen.
+    if let Some((cols, rows)) = terminal_size() {
+        args.extend(["-x".into(), cols.to_string(), "-y".into(), rows.to_string()]);
+    }
     for (key, value) in session_environment(session) {
         args.extend(["-e".into(), format!("{key}={value}")]);
     }
     args.extend(session.scratch.command.iter().cloned());
     args
+}
+
+fn terminal_size() -> Option<(u16, u16)> {
+    (0..3).find_map(|fd| {
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: TIOCGWINSZ writes only into the winsize we own.
+        let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } == 0;
+        (ok && size.ws_col > 0 && size.ws_row > 0).then_some((size.ws_col, size.ws_row))
+    })
 }
 
 fn session_environment(session: &SessionSpec<'_>) -> Vec<(String, String)> {
